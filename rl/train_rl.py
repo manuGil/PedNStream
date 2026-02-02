@@ -89,7 +89,7 @@ if __name__ == "__main__":
             hidden_size=64,
             kernel_size=4,
             use_param_noise=False,
-            use_action_noise=True,
+            use_action_noise=False,
             total_updates=80,
             param_noise_std_min=0
         ) for agent_id in env.possible_agents}
