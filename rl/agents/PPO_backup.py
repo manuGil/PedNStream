@@ -622,7 +622,7 @@ class AttentionPolicy(nn.Module):
         # It is invariant to the number of links and their order.
         self.attention_layer = nn.MultiheadAttention(
             embed_dim=hidden_size, 
-            num_heads=1,
+            num_heads=2,
             batch_first=True
         )
         # --- IMPROVEMENT END ---
@@ -701,7 +701,7 @@ class AttentionValueNetwork(nn.Module):
         # Replaces the manual "sum of others" logic
         self.attention = nn.MultiheadAttention(
             embed_dim=hidden_size,
-            num_heads=1,
+            num_heads=2,
             batch_first=True
         )
         
@@ -1327,6 +1327,7 @@ class PPOAgent:
                 mu = mu.squeeze(0)
                 std = std.squeeze(0)
             action_dist = torch.distributions.Normal(mu, std)
+            entropy = action_dist.entropy().mean()
             log_probs = action_dist.log_prob(actions)
 
             # Clamp log_prob difference to prevent ratio explosion
@@ -1337,7 +1338,7 @@ class PPOAgent:
             surr1 = ratio * advantage
             surr2 = torch.clamp(ratio, 1 - self.clip_eps,
                                 1 + self.clip_eps) * advantage
-            actor_loss = torch.mean(-torch.min(surr1, surr2))
+            actor_loss = torch.mean(-torch.min(surr1, surr2)) - self.entropy_coef * entropy
 
             # Entropy loss, use gaussian entropy formula
             # entropy = 0.5 * torch.log(2 * math.pi * math.e * std**2)
@@ -1378,6 +1379,7 @@ class PPOAgent:
                     break
 
         # Decay entropy coefficient after update
+        self.update_count += 1
         self._decay_entropy_coef()
         
         # Decay parameter noise std after update
@@ -1390,11 +1392,9 @@ class PPOAgent:
 
     def _decay_entropy_coef(self):
         """Apply exponential decay to entropy coefficient."""
-        self.update_count += 1
-        self.entropy_coef = max(
-            self.entropy_coef_min,
-            self.entropy_coef_initial * (self.entropy_coef_decay ** self.update_count)
-        )
+        progress = min(self.update_count / self.total_updates, 1.0)
+        self.entropy_coef = self.entropy_coef_initial + \
+            (self.entropy_coef_min - self.entropy_coef_initial) * progress
 
     def get_config(self) -> dict:
         """Get agent configuration for saving/loading."""
