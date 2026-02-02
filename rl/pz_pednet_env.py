@@ -557,24 +557,39 @@ class PedNetParallelEnv(ParallelEnv):
                 out_links = self.agent_manager.get_gater_outgoing_links(agent_id)
                 link_rewards = 0.0
                 all_densities = []
+
                 for link in out_links:
+                    link_flow = 0.0
+                    link_travel_time = 0.0
+                    link_excess_density_penalty = 0.0
                     density = link.get_density(self.sim_step)
                     all_densities.append(density)
                     T_ell = link.travel_time[self.sim_step] if self.sim_step < len(link.travel_time) else link.travel_time[0]
                     T_ell_reverse = link.reverse_link.travel_time[self.sim_step] if self.sim_step < len(link.reverse_link.travel_time) else link.reverse_link.travel_time[0]
-                    # T_free = link.length/link.free_flow_speed
+                    link_flow += link.link_flow[self.sim_step] if self.sim_step < len(link.outflow) else 0.0
+                    link_flow += link.reverse_link.link_flow[self.sim_step] if self.sim_step < len(link.reverse_link.outflow) else 0.0
+                    T_free = link.length/link.free_flow_speed
                     # normed_density = density/link.k_jam
-                    link_rewards -= T_ell + T_ell_reverse
-                    if density > 4:                 # density penalty
-                        link_rewards -= 10 * (density - link.k_critical)
+                    link_travel_time += T_ell + T_ell_reverse
+                    # link_rewards += link_flow
+
+                    # normalize the travel time by the free flow travel time
+                    # T_max = 1000
+                    norm_link_travel_time = np.log(link_travel_time / 2 / T_free)
+                    norm_link_flow = np.clip((link_flow / 2) / (link.free_flow_speed * link.k_critical), 0, 1)
+                    # print(norm_link_travel_time, norm_link_flow)
+                    link_rewards -= norm_link_travel_time
+                    link_rewards += norm_link_flow
+                    # if density > 4:                 # density penalty
+                    #     link_excess_density_penalty -= 1 * (density - 4)
                 # Variance penalty
-                variance_penalty_weight = 10.0
-                if len(all_densities) > 1:
-                    avg_density = np.mean(all_densities)
-                    diff = np.mean(np.abs(np.array(all_densities) - avg_density))
-                    # diff = np.var(all_densities)
-                    penalty = variance_penalty_weight * diff
-                    link_rewards -= penalty
+                # variance_penalty_weight = 0.0
+                # if len(all_densities) > 1:
+                #     avg_density = np.mean(all_densities)
+                #     diff = np.mean(np.abs(np.array(all_densities) - avg_density))
+                #     # diff = np.var(all_densities)
+                #     penalty = variance_penalty_weight * diff
+                #     link_rewards -= penalty
 
 
                 rewards[agent_id] = link_rewards
