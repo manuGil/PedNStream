@@ -104,6 +104,71 @@ if __name__ == "__main__":
             val_freq=10,
             use_wandb=True
         )
+
+    elif algo == "ppo_dyna":
+        agents = {agent_id: PPOAgent_dyna(
+            obs_dim=env.observation_space(agent_id).shape[0],
+            act_dim=env.action_space(agent_id).shape[0],
+            act_low=env.action_space(agent_id).low,
+            act_high=env.action_space(agent_id).high,
+            actor_lr=9e-5,
+            critic_lr=2e-4,
+            gamma=0.99,
+            lmbda=0.96,
+            entropy_coef=0.01,
+            kl_tolerance=0.01,
+            use_delta_actions=True,
+            max_delta=2.5,
+            lstm_hidden_size=64,
+            num_lstm_layers=1,
+            use_param_noise=False,
+            use_action_noise=False,
+            num_episodes=200,
+            tm_window=50,  # truncate backpropagation window
+            use_dyna=False,
+            model_lr=3e-4,
+            dream_rollouts=20,
+            dream_horizon=5,
+
+        ) for agent_id in env.possible_agents}
+
+        return_dict, _ = train_on_policy_multi_agent(
+            env, agents, num_episodes=200, delta_actions=True,
+            randomize=randomize, agents_saved_dir=f"./checkpoints/ppo_dyna_agents_{dataset}",
+            num_val_episodes=5, val_freq=10, use_wandb=False
+        )
+
+    elif algo == "pome":
+        agents = {agent_id: POMEAgent(
+            obs_dim=env.observation_space(agent_id).shape[0],
+            act_dim=env.action_space(agent_id).shape[0],
+            act_low=env.action_space(agent_id).low,
+            act_high=env.action_space(agent_id).high,
+            actor_lr=9e-5,
+            critic_lr=2e-4,
+            gamma=0.99,
+            lmbda=0.96,
+            entropy_coef=0.01,
+            kl_tolerance=0.01,
+            use_delta_actions=True,
+            max_delta=2.5,
+            lstm_hidden_size=64,
+            num_lstm_layers=1,
+            use_param_noise=False,
+            use_action_noise=False,
+            num_episodes=200,
+            tm_window=50,
+            model_lr=5e-4,
+            # alpha=0.1,
+            # alpha_min=0.0,
+            norm_reward=True,
+        ) for agent_id in env.possible_agents}
+        return_dict, _ = train_on_policy_multi_agent(
+            env, agents, num_episodes=200, delta_actions=True,
+            randomize=randomize, agents_saved_dir=f"./checkpoints/pome_agents_{dataset}",
+            num_val_episodes=5, val_freq=10, use_wandb=False
+        )
+
     elif algo == "sac":
         agents = {agent_id: SACAgent(
             obs_dim=env.observation_space(agent_id).shape[0],
