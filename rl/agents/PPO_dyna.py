@@ -12,8 +12,10 @@ from tqdm import tqdm
 from rl.rl_utils import compute_gae, save_with_best_return, validate_and_save_best, layer_init
 import math
 import os
+import random
 import collections
 from .SAC import MLPEncoder, StackedEncoder
+from .PPO_backup import AttentionPolicy, AttentionValueNetwork, train_on_policy_multi_agent
 from torch_geometric.nn import DenseGATConv
 from torch_geometric.utils import to_dense_adj
 try:
@@ -54,10 +56,11 @@ class LocalDynamicModel(nn.Module):
         # self.shared_latent_layer = nn.Linear(hidden_size * act_dim, hidden_size * act_dim)
 
         self.reward_head = nn.Linear(hidden_size + act_dim, 1) # R(s_t, a_t)
-        self.state_head = nn.Linear(hidden_size, self.features_per_link - 1) # P(s_t_next | s_t, a_t), s_t_next exclude the gate width
+        self.state_head = nn.Linear(hidden_size + 1, self.features_per_link - 1) # P(s_t_next | s_t, a_t), s_t_next exclude the gate width
 
     def forward(self, x, a, hidden=None):
-        x = x.squeeze()
+        if x.dim() == 3:
+            x = x.squeeze()
         seq_len = x.shape[0]
 
         x_lstm_input = x.view(seq_len, self.act_dim, self.features_per_link).transpose(0, 1)
@@ -70,555 +73,73 @@ class LocalDynamicModel(nn.Module):
         ud_features = self.ud_model(combined_features) # (seq_len, num_links, hidden_size)
 
         reward = self.reward_head(F.relu(torch.cat([ud_features.mean(dim=1), a], dim=1)))
-        next_state = self.state_head(F.relu(ud_features)) # (seq_len, num_links, features_per_link - 1)
+        next_state = self.state_head(F.relu(torch.cat([ud_features, a.unsqueeze(2)], dim=2))) # (seq_len, num_links, features_per_link - 1)
         # concate a with next_state
-        current_gate_width = x[:, :, -1] + a
+        current_gate_width = x.view(seq_len, self.act_dim, self.features_per_link)[..., -1] + a
         next_state = torch.cat([next_state, current_gate_width.unsqueeze(2)], dim=2)
         return reward, next_state, hidden_out
 
-# =============================================================================
-# PPO Agent with upstream and downstream modeling
-# =============================================================================
-class UDLSTMPolicyNetwork(nn.Module):
+
+class SimpleDynamicModel(nn.Module):
     """
-    LSTM-based policy network with upstream/downstream link aggregation.
-    
-    Each link's action is informed by:
-    1. Its own temporal features (from shared LSTM)
-    2. Aggregated features from all other links (upstream/downstream context)
+    Simple LSTM + MLP Dynamic Prediction Model
     """
-    def __init__(self, obs_dim, act_dim, hidden_size=64, num_layers=1,
-                 min_std=1e-3, max_std=10.0):
-        super().__init__()
-        self.obs_dim = obs_dim
-        self.act_dim = act_dim  # num_links = act_dim
-        self.features_per_link = obs_dim // act_dim
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.min_std = min_std
-        self.max_std = max_std
-
-        # Shared LSTM for processing each link's temporal data
-        self.lstm = nn.LSTM(
-            input_size=self.features_per_link,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True
-        )
-        
-        # Link-specific feature extractor
-        # self.link_model = nn.Linear(hidden_size, hidden_size)
-        self.link_model = nn.Linear(hidden_size, hidden_size)
-        
-        # Upstream/Downstream aggregation model
-        # Input: [link_features, other_links_sum] -> hidden_size
-        self.ud_model = nn.Linear(2 * hidden_size, hidden_size)
-
-        # Shared latent layer for action coordination
-        self.shared_latent_layer = nn.Linear(hidden_size * act_dim, hidden_size * act_dim)
-        # self.shared_latent_layer = nn.Linear((hidden_size+1) * act_dim, hidden_size * act_dim)
-
-        # Per-link action heads (output 1 action per link)
-        self.mean_head = nn.Linear(hidden_size, 1)
-        self.std_head = nn.Linear(hidden_size, 1)
-
-    def forward(self, x, hidden=None):
-        """
-        Forward pass with upstream/downstream aggregation.
-
-        Args:
-            x: Observations of shape (seq_len, num_links * features_per_link)
-            hidden: Optional tuple (h, c) of hidden states
-
-        Returns:
-            mean: Action mean (seq_len, act_dim)
-            std: Action std (seq_len, act_dim)
-            hidden: Updated hidden state tuple (h, c)
-        """
-        if x.dim() == 3:
-            x = x.squeeze()
-        seq_len = x.shape[0]
-        
-        # Reshape input: (seq_len, num_links * features) -> (num_links, seq_len, features)
-        x_lstm_input = x.view(seq_len, self.act_dim, self.features_per_link).transpose(0, 1)
-        
-        # LSTM forward (shared weights across all links)
-        lstm_out, hidden_out = self.lstm(x_lstm_input, hidden)  # (num_links, seq_len, hidden_size)
-        lstm_features = lstm_out.transpose(0, 1)  # (seq_len, num_links, hidden_size)
-        
-        # Extract link-specific features
-        link_features = self.link_model(lstm_features)  # (seq_len, num_links, hidden_size)
-        
-        # Compute sum of all link features
-        all_links_sum = link_features.sum(dim=1)  # (seq_len, hidden_size)
-        
-        # For each link, get "other links" features by subtracting its own
-        other_links_features = all_links_sum.unsqueeze(1) - link_features  # (seq_len, num_links, hidden_size)
-        
-        # Concatenate each link's features with aggregated other links' features
-        combined_features = torch.cat([link_features, other_links_features], dim=2)  # (seq_len, num_links, 2*hidden_size)
-        
-        # Process through UD model
-        ud_features = self.ud_model(combined_features)  # (seq_len, num_links, hidden_size)
-        # get gate width features
-        # gate_widths = x.reshape(seq_len, self.act_dim, self.features_per_link)[:,:,-1].unsqueeze(2) # (seq_len, num_links, 1)
-        # ud_features = torch.cat([ud_features, gate_widths], dim=2)  # (seq_len, num_links, hidden_size + 1)
-
-        # Flatten features for shared latent layer
-        shared_features = ud_features.view(seq_len, -1)  # (seq_len, num_links * hidden_size)
-        shared_latent = self.shared_latent_layer(shared_features)  # (seq_len, num_links * hidden_size)
-        shared_latent = shared_latent.view(seq_len, self.act_dim, self.hidden_size)  # (seq_len, num_links, hidden_size)
-
-        # Generate per-link actions
-        mean = self.mean_head(F.relu(shared_latent)).squeeze(-1)  # (seq_len, num_links)
-        std = F.softplus(self.std_head(F.relu(shared_latent))).squeeze(-1).clamp(self.min_std, self.max_std)  # (seq_len, num_links)
-        # # Generate per-link actions
-        # mean = self.mean_head(F.relu(ud_features)).squeeze(-1)  # (seq_len, num_links)
-        # std = F.softplus(self.std_head(F.relu(ud_features))).squeeze(-1).clamp(self.min_std, self.max_std)  # (seq_len, num_links)
-
-        return mean, std, hidden_out
-
-
-class UDLSTMValueNetwork(nn.Module):
-    """Stateful LSTM-based value network that maintains hidden state across timesteps."""
     def __init__(self, obs_dim, act_dim, hidden_size=64, num_layers=1):
         super().__init__()
         self.obs_dim = obs_dim
         self.act_dim = act_dim
-        self.num_links = act_dim
-        self.features_per_link = obs_dim // act_dim
         self.hidden_size = hidden_size
         self.num_layers = num_layers
-
-        self.lstm = nn.LSTM(
-            input_size=self.features_per_link,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True
-        )
-
-        self.link_model = nn.Linear(hidden_size, hidden_size)
-        self.ud_model = nn.Linear(2*hidden_size, hidden_size)
-        self.value_head = nn.Linear(hidden_size, 1)
-        # self.value_head = nn.Linear(hidden_size + 1, 1)
-
-    def forward(self, x, hidden=None):
-        """
-        Forward pass with optional hidden state.
-
-        Args:
-            x: Single observation of shape (batch, obs_dim) or sequence (batch, seq_len, obs_dim)
-            hidden: Optional tuple (h, c) of hidden states
-
-        Returns:
-            value: State value estimate
-            hidden: Updated hidden state tuple (h, c)
-        """
-        x = x.squeeze()
-        seq_len = x.shape[0]
-        # batch_size = 1
-
-        # Reshape input
-        x_lstm_input = x.view(seq_len, self.num_links, self.features_per_link).transpose(0, 1) # (num_links, seq_len, features_per_link)
-
-        # LSTM forward
-        lstm_out, hidden_out = self.lstm(x_lstm_input, hidden)
-        lstm_features = lstm_out.transpose(0, 1)  # (seq_len, num_links, lstm_hidden_size)
-        
-        # Extract link-specific features
-        link_features = self.link_model(lstm_features)  # (seq_len, num_links, hidden_size)
-        
-        # For each link, aggregate features from all OTHER links
-        # Create upstream/downstream features by summing all other links
-        
-        # Compute sum of all link features: (seq_len, hidden_size)
-        all_links_sum = link_features.sum(dim=1)  # (seq_len, hidden_size)
-        
-        # For each link, subtract its own features to get "other links" sum
-        # Broadcast: (seq_len, 1, hidden_size) - (seq_len, num_links, hidden_size)
-        other_links_features = all_links_sum.unsqueeze(1) - link_features  # (seq_len, num_links, hidden_size)
-        
-        # Concatenate each link's features with aggregated other links' features
-        combined_features = torch.cat([link_features, other_links_features], dim=2)  # (seq_len, num_links, 2*hidden_size)
-        
-        # Process through UD model
-        ud_features = self.ud_model(combined_features)  # (seq_len, num_links, hidden_size)
-        # get gate width features
-        # gate_widths = x.reshape(seq_len, self.num_links, self.features_per_link)[:,:,-1].unsqueeze(2) # (seq_len, num_links, 1)
-        # ud_features = torch.cat([ud_features, gate_widths], dim=2)  # (seq_len, num_links, hidden_size + 1)
-
-        # Aggregate across links (e.g., mean pooling for global value)
-        # global_features = ud_features.mean(dim=1)  # (seq_len, hidden_size)
-        global_features = ud_features.mean(dim=1) # (seq_len, hidden_size + 1)
-        
-        # Compute value
-        value = self.value_head(F.elu(global_features))  # (seq_len, 1)
-
-        return value, hidden_out
-
-
-class AttentionPolicy(nn.Module):
-    def __init__(self, obs_dim, act_dim, hidden_size=64, num_layers=1,
-                 min_std=1e-3, max_std=10.0):
-        super().__init__()
-        self.obs_dim = obs_dim
-        self.act_dim = act_dim 
         self.features_per_link = obs_dim // act_dim
-        self.hidden_size = hidden_size
-        self.min_std = min_std
-        self.max_std = max_std
 
-        # Shared LSTM (Kept the same)
+        # LSTM processes the full observation sequence
         self.lstm = nn.LSTM(
-            input_size=self.features_per_link,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True
-        )
-        
-        # Link-specific feature extractor
-        self.link_model = nn.Linear(hidden_size, hidden_size)
-        
-        # --- IMPROVEMENT START ---
-        # Instead of a fixed Linear(N*H, N*H), we use Multi-Head Attention.
-        # This allows "All-to-All" communication but uses shared weights.
-        # It is invariant to the number of links and their order.
-        self.attention_layer = nn.MultiheadAttention(
-            embed_dim=hidden_size, 
-            num_heads=2,
-            batch_first=True
-        )
-        # --- IMPROVEMENT END ---
-
-        # Layer normalization on coordinated features (per link, per timestep)
-        # self.layer_norm = nn.LayerNorm(hidden_size)
-
-        # Per-link action heads (Shared weights, applied per link)
-        self.mean_head = nn.Linear(hidden_size, 1)
-        self.std_head = nn.Linear(hidden_size, 1)
-
-    def forward(self, x, hidden=None):
-        if x.dim() == 3:
-            x = x.squeeze()
-        seq_len = x.shape[0]
-        
-        # 1. Prepare Input
-        # (seq_len, num_links, features)
-        x_lstm_input = x.view(seq_len, self.act_dim, self.features_per_link).transpose(0, 1)
-        
-        # 2. LSTM (Independent processing)
-        lstm_out, hidden_out = self.lstm(x_lstm_input, hidden) 
-        lstm_features = lstm_out.transpose(0, 1) # (seq_len, num_links, hidden_size)
-        
-        # 3. Link Features
-        link_features = self.link_model(lstm_features) 
-
-        # 4. Coordination via Attention (The Fix)
-        # We treat 'num_links' as the sequence length for the transformer logic.
-        # We reshape to mix time/batch so attention happens purely between links at the same timestep.
-        
-        # Shape: (seq_len * num_links, hidden_size) -> This loses "who is who"
-        # We need: (seq_len, num_links, hidden_size)
-        
-        # Attention expects: (Batch, Sequence, Features)
-        # Here "Batch" is actual_seq_len, "Sequence" is num_links
-        # This creates "All-to-all" communication between links
-        attn_out, _ = self.attention_layer(
-            query=link_features, 
-            key=link_features, 
-            value=link_features
-        )
-        
-        # Residual connection (optional but recommended)
-        coordinated_features = link_features + attn_out
-        # Apply layer normalization for stability
-        # coordinated_features = self.layer_norm(coordinated_features)
-        
-        # 5. Final Heads
-        # The 'coordinated_features' now contains info from self + all other links
-        mean = self.mean_head(F.relu(coordinated_features)).squeeze(-1) 
-        std = F.softplus(self.std_head(F.relu(coordinated_features))).squeeze(-1).clamp(self.min_std, self.max_std)
-
-        return mean, std, hidden_out
-
-class AttentionValueNetwork(nn.Module):
-    def __init__(self, obs_dim, act_dim, hidden_size=64, num_layers=1):
-        super().__init__()
-        self.obs_dim = obs_dim
-        self.act_dim = act_dim
-        self.features_per_link = obs_dim // act_dim
-        self.hidden_size = hidden_size
-        
-        # 1. Shared LSTM (Same as Policy)
-        self.lstm = nn.LSTM(
-            input_size=self.features_per_link,
+            input_size=obs_dim,
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True
         )
 
-        # 2. Link Feature Extractor
-        self.link_model = nn.Linear(hidden_size, hidden_size)
-
-        # 3. Attention (The Upgrade)
-        # Replaces the manual "sum of others" logic
-        self.attention = nn.MultiheadAttention(
-            embed_dim=hidden_size,
-            num_heads=2,
-            batch_first=True
+        # MLP for reward prediction: R(s_t, a_t)
+        self.reward_mlp = nn.Sequential(
+            nn.Linear(hidden_size + act_dim, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, 1)
         )
-        
-        # Layer normalization on coordinated features
-        # self.layer_norm = nn.LayerNorm(hidden_size)
 
-        # 4. Global Value Head
-        # Takes the aggregated system state and outputs 1 value
-        self.value_head = nn.Linear(hidden_size, 1)
+        # MLP for next state prediction: P(s_t_next | s_t, a_t)
+        # Predicts features_per_link - 1 for each link (excluding gate width)
+        self.state_mlp = nn.Sequential(
+            nn.Linear(hidden_size + act_dim, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, act_dim * (self.features_per_link - 1))
+        )
 
-    def forward(self, x, hidden=None):
-        """
-        Returns:
-            value: (seq_len, 1)
-            hidden: (h, c)
-        """
+    def forward(self, x, a, hidden=None):
         if x.dim() == 3:
             x = x.squeeze()
         seq_len = x.shape[0]
 
-        # --- Phase 1: Individual Link Processing ---
-        # Reshape: (seq_len, num_links, features)
-        x_lstm_input = x.view(seq_len, self.act_dim, self.features_per_link).transpose(0, 1)
-        
-        # LSTM Forward
-        lstm_out, hidden_out = self.lstm(x_lstm_input, hidden)
-        lstm_features = lstm_out.transpose(0, 1) # (seq_len, num_links, hidden_size)
-        
-        # Linear projection
-        link_features = self.link_model(lstm_features)
+        # LSTM input: (batch, seq_len, obs_dim) - treat each timestep as single obs
+        x_lstm = x.unsqueeze(1)  # (seq_len, 1, obs_dim)
+        lstm_out, hidden_out = self.lstm(x_lstm, hidden)
+        lstm_features = lstm_out.squeeze(1)  # (seq_len, hidden_size)
 
-        # --- Phase 2: Coordination (Attention) ---
-        # "All-to-All" communication.
-        # Links exchange info. If Link A is jammed, Link B knows about it here.
-        attn_out, _ = self.attention(
-            query=link_features,
-            key=link_features,
-            value=link_features
-        )
-        
-        # Residual Connection (Important for gradient flow)
-        coordinated_features = link_features + attn_out # (seq_len, num_links, hidden_size)
-        # Apply layer normalization
-        # coordinated_features = self.layer_norm(coordinated_features)
+        # Concatenate LSTM features with action
+        combined = torch.cat([lstm_features, a], dim=1)
 
-        # --- Phase 3: Global Aggregation ---
-        # Now that every link vector contains info about the global state (thanks to attention),
-        # we can safely average them to get the "System Representation".
-        
-        # (seq_len, num_links, hidden) -> (seq_len, hidden)
-        global_state = coordinated_features.mean(dim=1) 
-        
-        # --- Phase 4: Value Estimation ---
-        value = self.value_head(F.elu(global_state)) # (seq_len, 1)
+        # Predict reward
+        reward = self.reward_mlp(combined)
 
-        return value, hidden_out
+        # Predict next state (excluding gate width)
+        next_state_flat = self.state_mlp(combined)
+        next_state = next_state_flat.view(seq_len, self.act_dim, self.features_per_link - 1)
 
-def train_on_policy_multi_agent(env, agents, delta_actions=False, num_episodes=50,
-                                randomize=False,
-                                agents_saved_dir: str = None, use_wandb: bool = True,
-                                val_freq: int = 10, num_val_episodes: int = 3):
-    """
-    Train multiple on-policy agents (PPO) in a multi-agent environment.
+        # Append gate width: current gate + action delta
+        current_gate_width = x.view(seq_len, self.act_dim, self.features_per_link)[..., -1] + a
+        next_state = torch.cat([next_state, current_gate_width.unsqueeze(2)], dim=2)
 
-    Args:
-        env: PettingZoo ParallelEnv
-        agents: Dict mapping agent_id -> PPOAgent
-        delta_actions: If True, agents output delta actions
-        num_episodes: Total number of episodes to train
-        randomize: If True, randomize environment at reset
-        agents_saved_dir: Directory to save agent checkpoints
-        use_wandb: If True, log metrics to wandb (default: True)
-        val_freq: Validation frequency - run validation every N episodes (default: 10)
-        num_val_episodes: Number of validation episodes to run (default: 3)
-
-    Returns:
-        return_dict: Dict mapping agent_id -> list of episode returns
-    """
-    # Initialize wandb if available and not already initialized
-    if use_wandb and WANDB_AVAILABLE:
-        if wandb.run is None:
-            wandb.init(project="crowd-control-rl", name="ppo-training")
-    
-    # Initialize return tracking for each agent
-    return_dict = {agent_id: [] for agent_id in agents.keys()}
-    global_episode = 0  # Track global episode count for saving
-
-    # Track best average return across all agents (initialize to negative infinity)
-    best_avg_return = float('-inf')
-
-    # Check if any agent uses stacked observations
-    first_agent_id = next(iter(agents))
-    uses_stacked_obs = hasattr(agents[first_agent_id], 'stack_size')
-
-    # Initialize state history queues for stacked observations
-    if uses_stacked_obs:
-    # history queue for states stack
-        first_agent_id = next(iter(agents))
-        stack_size = agents[first_agent_id].stack_size
-        state_history_queue = {agent_id: collections.deque(maxlen=stack_size) for agent_id in agents.keys()}
-
-    for i in range(10):
-        with tqdm(total=int(num_episodes/10), desc='Iteration %d' % i) as pbar:
-            for i_episode in range(int(num_episodes/10)):
-                # Reset buffers for all agents at start of episode
-                for agent in agents.values():
-                    agent.reset_buffer()
-
-                # Reset environment
-                if i_episode == 0:
-                    obs, infos = env.reset(options={'randomize': False})
-                else:
-                    obs, infos = env.reset(options={'randomize': randomize})
-
-                # Initialize state history queues for stacked observations
-                state_stack = {}
-                if uses_stacked_obs:
-                    for agent_id in state_history_queue.keys():
-                        state_history_queue[agent_id].clear()
-                        for _ in range(agents[agent_id].stack_size):
-                            state_history_queue[agent_id].append(obs[agent_id])
-                        state_stack[agent_id] = np.array(state_history_queue[agent_id])
-
-                episode_returns = {agent_id: 0.0 for agent_id in agents.keys()}
-                episode_true_returns = {agent_id: 0.0 for agent_id in agents.keys()}  # Track true (un-normalized) rewards
-                done = False
-                step = 0 # only for progress bar
-
-                # Exploration phase
-                while not done:
-                    # Collect actions from all agents
-                    actions = {}
-                    absolute_actions = {}
-                    # Make actions for all agents
-                    # if step == 230:
-                    #     pass
-                    for agent_id, agent in agents.items():
-                        # Use stacked state if agent uses stacked observations, otherwise use single observation
-                        if agent_id in state_stack:
-                            agent_state = state_stack[agent_id]
-                        else:
-                            agent_state = obs[agent_id]
-                        action = agent.take_action(agent_state)
-                        if delta_actions:
-                            absolute_action = obs[agent_id].reshape(agents[agent_id].act_dim, -1)[:,-1] + action
-                            absolute_action = np.clip(absolute_action, agents[agent_id].act_low, agents[agent_id].act_high)
-                            absolute_actions[agent_id] = absolute_action
-                        else:
-                            absolute_actions[agent_id] = action
-                        actions[agent_id] = action
-                    # Step environment with all actions
-                    next_obs, rewards, terms, truncs, infos = env.step(absolute_actions)
-                    next_state_stack = {}
-
-                    # Store transitions for all agents (before updating state queues)
-                    for agent_id, agent in agents.items():
-                        # Get the state that was used for action selection
-                        if agent_id in state_stack:
-                            # stored_state = state_stack[agent_id].copy()  # Current state (before update)
-                            # For next_state, we'll create the updated stack
-                            # Build next state stack: current stack without oldest, plus new observation
-                            state_history_queue[agent_id].append(next_obs[agent_id])
-                            next_state_stack[agent_id] = np.array(state_history_queue[agent_id])
-                            stored_state = state_stack[agent_id]
-                            stored_next_state = next_state_stack[agent_id]
-
-                        else:
-                            stored_state = obs[agent_id]
-                            stored_next_state = next_obs[agent_id]
-
-                        agent.store_transition(
-                            state = stored_state,
-                            action = actions[agent_id],
-                            next_state = stored_next_state,
-                            reward = rewards[agent_id],
-                            done = terms[agent_id],
-                        )
-                        episode_returns[agent_id] += rewards[agent_id]
-                        # Track true (un-normalized) rewards if available
-                        if agent_id in infos and 'true_reward' in infos[agent_id]:
-                            episode_true_returns[agent_id] += infos[agent_id]['true_reward']
-                        else:
-                            episode_true_returns[agent_id] += rewards[agent_id]
-
-
-                    obs = next_obs
-                    # Update state history queues for stacked observations (after storing transitions)
-                    if uses_stacked_obs:
-                        state_stack = next_state_stack
-
-
-                    step += 1
-
-                    # Check if episode is done
-                    done = any(terms.values()) or any(truncs.values())
-
-                # Store episode returns for all agents
-                for agent_id in agents.keys():
-                    return_dict[agent_id].append(episode_returns[agent_id])
-
-                # Update all agents
-                for agent_id, agent in agents.items():
-                    agent.update()
-
-                # Increment global episode counter
-                global_episode += 1
-
-                # Log rewards to wandb after each update step
-                if use_wandb and WANDB_AVAILABLE and wandb.run is not None:
-                    log_dict = {
-                        'episode': global_episode,
-                        'avg_normalized_return': np.mean(list(episode_returns.values())),
-                        'avg_true_return': np.mean(list(episode_true_returns.values())),
-                        'total_normalized_return': sum(episode_returns.values()),
-                        'total_true_return': sum(episode_true_returns.values()),
-                        'episode_steps': step
-                    }
-                    # Log per-agent rewards
-                    for agent_id in agents.keys():
-                        log_dict[f'agent_{agent_id}_normalized_return'] = episode_returns[agent_id]
-                        log_dict[f'agent_{agent_id}_true_return'] = episode_true_returns[agent_id]
-                    wandb.log(log_dict)
-
-                # Run validation and save best model (after half of training, every val_freq episodes)
-                if agents_saved_dir and global_episode > num_episodes/2 and global_episode % val_freq == 0:
-                    best_avg_return = validate_and_save_best(
-                        env, agents, agents_saved_dir,
-                        delta_actions=delta_actions,
-                        num_val_episodes=num_val_episodes,
-                        randomize=True, # always randomize during validation
-                        best_avg_return=best_avg_return,
-                        global_episode=global_episode,
-                        use_wandb=use_wandb and WANDB_AVAILABLE
-                    )
-                    # best_avg_return = save_with_best_return(agents, agents_saved_dir, episode_returns=episode_returns, best_avg_return=best_avg_return, global_episode=global_episode)
-                # Update progress bar with both normalized and true returns
-                if (i_episode+1) % 10 == 0:
-                    avg_return = np.mean([np.mean(return_dict[aid][-10:]) for aid in agents.keys()])
-                    avg_true_return = np.mean(list(episode_true_returns.values()))
-                    pbar.set_postfix({
-                        'episode': '%d' % (num_episodes/10 * i + i_episode+1),
-                        'norm_ret': '%.3f' % avg_return,
-                        'true_ret': '%.3f' % avg_true_return,
-                        'steps': step
-                    })
-                pbar.update(1)
-                # print episode rewards of all agents
-                for agent_id in agents.keys():
-                    print(f"Agent {agent_id} episode reward: {episode_returns[agent_id]}")
-                print(f"All agents episode reward: {sum(episode_returns.values())}")
-
-    return return_dict, episode_returns
-
-# Use compute_gae from rl_utils instead
+        return reward, next_state, hidden_out
 
 
 class PPOAgent:
@@ -634,7 +155,9 @@ class PPOAgent:
                  use_param_noise=False, param_noise_std=0.1,
                  param_noise_std_min=0.01,
                  use_action_noise=False, action_noise_std=0.1,
-                 action_noise_std_min=0.01, num_episodes=100, tm_window=50):
+                 action_noise_std_min=0.01, num_episodes=100, tm_window=50,
+                 # Dyna-PPO settings
+                 use_dyna=False, model_lr=3e-4, dream_rollouts=10, dream_horizon=5):
         """
         Initialize PPO agent with LSTM, stacked observation, or GAT-LSTM networks.
 
@@ -730,12 +253,41 @@ class PPOAgent:
         self.action_noise_std_min = action_noise_std_min
         self.total_updates = num_episodes * 0.8
 
+        # Dyna-PPO: Dynamics model for model-based augmentation
+        self.use_dyna = use_dyna
+        self.dream_rollouts = dream_rollouts  # Number of simulated rollouts per update
+        self.dream_horizon = dream_horizon    # Steps per simulated rollout
+        if self.use_dyna:
+            self.dynamic_model = LocalDynamicModel(
+                obs_dim, act_dim, hidden_size=lstm_hidden_size, num_layers=num_lstm_layers
+            ).to(device)
+            # self.dynamic_model = SimpleDynamicModel(
+            #     obs_dim, act_dim, hidden_size=lstm_hidden_size, num_layers=num_lstm_layers
+            # ).to(device)
+            self.model_optimizer = torch.optim.Adam(self.dynamic_model.parameters(), lr=model_lr)
+            self.model_hidden = None  # Hidden state for dynamics model
+            self.model_train_steps = 10  # Number of gradient steps per update
+            
+            # Adaptive loss threshold for dreaming
+            self.model_loss_history = []
+            self.model_loss_window = 20  # Track last N losses
+            self.model_loss_threshold_multiplier = 1.5  # Dream if loss < 1.5x avg
+            
+            # Reward normalizer variance (set by training loop from wrapper)
+            self.reward_ret_var = 1.0  # Default: no normalization
+
     def reset_buffer(self):
         """Clear rollout buffer, reset LSTM hidden states, and apply parameter noise for new episode."""
-        self.transition_dict = {'states': [], 'actions': [], 'next_states': [], 'rewards': [], 'dones': []}
+        self.transition_dict = {
+            'states': [], 'actions': [], 'next_states': [], 'rewards': [], 'dones': [],
+            'actor_hiddens': [], 'model_hiddens': [],
+            'true_rewards': []  # True (unnormalized) rewards for Dyna model training
+        }
         # Reset LSTM hidden states (only if using LSTM or GAT-LSTM, will be initialized in first forward pass)
         self.actor_hidden = None
         self.critic_hidden = None
+        if self.use_dyna:
+            self.model_hidden = None
         self.tm_step = 1
         # Apply parameter noise at the start of each episode
         if self.use_param_noise:
@@ -791,13 +343,43 @@ class PPOAgent:
         self.action_noise_std = self.action_noise_std_initial + \
             (self.action_noise_std_min - self.action_noise_std_initial) * progress
 
-    def store_transition(self, state, action, next_state, reward, done):
-        """Store transition in buffer."""
+    def store_transition(self, state, action, next_state, reward, done, true_reward=None):
+        """Store transition in buffer, including hidden states for Dyna rollouts.
+        
+        Args:
+            state: Current observation
+            action: Action taken
+            next_state: Next observation
+            reward: Reward received (may be normalized)
+            done: Terminal flag
+            true_reward: True (unnormalized) reward for Dyna model training
+        """
         self.transition_dict['states'].append(state)
         self.transition_dict['actions'].append(action)
         self.transition_dict['next_states'].append(next_state)
         self.transition_dict['rewards'].append(reward)
         self.transition_dict['dones'].append(done)
+        # Store true reward for Dyna model training (use reward if true_reward not provided)
+        self.transition_dict['true_rewards'].append(true_reward if true_reward is not None else reward)
+        # Store hidden states for Dyna (deep copy to avoid reference issues)
+        if self.use_dyna:
+            actor_h = None
+            if self.actor_hidden is not None:
+                actor_h = (self.actor_hidden[0].detach().clone(), self.actor_hidden[1].detach().clone())
+            model_h = None
+            if self.model_hidden is not None:
+                model_h = (self.model_hidden[0].detach().clone(), self.model_hidden[1].detach().clone())
+            self.transition_dict['actor_hiddens'].append(actor_h)
+            self.transition_dict['model_hiddens'].append(model_h)
+    
+    def set_reward_normalizer_var(self, ret_var: float):
+        """Set reward normalizer variance from training wrapper.
+        
+        This is used to normalize simulated rewards to match real reward scale.
+        Call this before update() to sync with the wrapper's running statistics.
+        """
+        if self.use_dyna:
+            self.reward_ret_var = max(ret_var, 1e-8)  # Prevent division by zero
 
     def take_action(self, state, deterministic: bool = False):
         """
@@ -838,11 +420,19 @@ class PPOAgent:
         if self.use_delta_actions:
             # Agent outputs delta in [-max_delta, +max_delta]
             delta = torch.clamp(action, -self.max_delta, self.max_delta)
-            return delta.cpu().detach().numpy().squeeze()
+            action_out = delta.cpu().detach().numpy().squeeze()
         else:
             # Direct absolute action
             action = torch.clamp(action, self.act_low, self.act_high)
-            return action.cpu().detach().numpy().squeeze()
+            action_out = action.cpu().detach().numpy().squeeze()
+        
+        # Update dynamics model hidden state for Dyna (needed for storing)
+        if self.use_dyna:
+            with torch.no_grad():
+                action_tensor = torch.tensor(action_out, dtype=torch.float).unsqueeze(0).to(self.device)
+                _, _, self.model_hidden = self.dynamic_model(state_tensor, action_tensor, self.model_hidden)
+        
+        return action_out
 
     def update(self):
         """Update policy and value networks using collected trajectory."""
@@ -962,11 +552,303 @@ class PPOAgent:
         if self.use_action_noise:
             self._decay_action_noise_std()
 
+        # =================================================================
+        # Dyna-PPO: Model-based data augmentation
+        # =================================================================
+        if self.use_dyna:
+            # Step 1: Train dynamics model on real data using TRUE rewards
+            true_rewards = torch.tensor(np.array(self.transition_dict['true_rewards']),
+                                        dtype=torch.float).view(-1, 1).to(self.device)
+            model_loss = self.train_dynamics_model(states, actions, next_states, true_rewards)
+            
+            # Track model loss for adaptive dreaming threshold
+            self.model_loss_history.append(model_loss)
+            if len(self.model_loss_history) > self.model_loss_window:
+                self.model_loss_history.pop(0)
+            
+            # Step 2: Check if model is stable enough to dream
+            # Only dream if: (1) we have enough loss history, AND
+            #                (2) current loss is below threshold (1.5x avg)
+            should_dream = False
+            if len(self.model_loss_history) >= self.model_loss_window:
+                avg_loss = np.mean(self.model_loss_history)
+                if model_loss < self.model_loss_threshold_multiplier * avg_loss and model_loss < 30:
+                    should_dream = True
+            
+            # Step 3: Generate simulated data ("dreaming") if model is ready
+            if should_dream:
+                rollouts = self.dream()
+                
+                # Step 4: Update policy on each simulated rollout separately
+                # This ensures GAE is computed correctly per-rollout
+                if rollouts is not None:
+                    for rollout in rollouts:
+                        if len(rollout['states']) == 0:
+                            continue
+                        
+                        sim_states = torch.tensor(np.array(rollout['states']),
+                                                  dtype=torch.float).to(self.device)
+                        sim_actions = torch.tensor(np.array(rollout['actions'])).view(-1, self.act_dim).to(self.device)
+                        
+                        # Simulated rewards are in TRUE scale - normalize them
+                        # using the same statistics as the environment wrapper
+                        sim_rewards_raw = torch.tensor(np.array(rollout['rewards']),
+                                                       dtype=torch.float).view(-1, 1).to(self.device)
+                        sim_rewards = torch.clamp(
+                            sim_rewards_raw / np.sqrt(self.reward_ret_var),
+                            -10.0, 10.0  # Same clip as wrapper
+                        )
+                        
+                        sim_next_states = torch.tensor(np.array(rollout['next_states']),
+                                                       dtype=torch.float).to(self.device)
+                        sim_dones = torch.tensor(np.array(rollout['dones']),
+                                                 dtype=torch.float).view(-1, 1).to(self.device)
+                        
+                        # Use fewer epochs for simulated data to avoid overfitting to model errors
+                        self._ppo_update_on_data(sim_states, sim_actions, sim_rewards, 
+                                                 sim_next_states, sim_dones, epochs=max(1, self.epochs // 2))
+            
+            # Log model loss and dreaming status if wandb is available
+            if WANDB_AVAILABLE and wandb.run is not None:
+                wandb.log({
+                    'dynamics_model_loss': model_loss,
+                    'dyna_dreaming_active': float(should_dream)
+                })
+
     def _decay_entropy_coef(self):
         """Apply exponential decay to entropy coefficient."""
         progress = min(self.update_count / self.total_updates, 1.0)
         self.entropy_coef = self.entropy_coef_initial + \
             (self.entropy_coef_min - self.entropy_coef_initial) * progress
+
+    # =========================================================================
+    # Dyna-PPO Methods
+    # =========================================================================
+
+    def train_dynamics_model(self, states, actions, next_states, true_rewards):
+        """
+        Train the dynamics model on real transitions using TRUE (unnormalized) rewards.
+        
+        Args:
+            states: (T, obs_dim) tensor
+            actions: (T, act_dim) tensor  
+            next_states: (T, obs_dim) tensor
+            true_rewards: (T, 1) tensor - TRUE rewards (not normalized)
+            
+        Returns:
+            float: Average model loss over training steps
+        """
+        if not self.use_dyna:
+            return 0.0
+        
+        # Reshape states for model: (seq_len, obs_dim) -> add batch dim
+        states_seq = states.unsqueeze(0)  # (1, T, obs_dim)
+        actions_squeezed = actions.float()  # (T, act_dim)
+        
+        # Target: reshape next_states to match prediction shape
+        features_per_link = self.obs_dim // self.act_dim
+        target_next_states = next_states.view(-1, self.act_dim, features_per_link)  # (T, num_links, features_per_link)
+        
+        total_loss = 0.0
+        
+        # Multiple gradient steps for better convergence
+        for _ in range(self.model_train_steps):
+            self.model_optimizer.zero_grad()
+            
+            # Forward through dynamics model
+            pred_rewards, pred_next_states, _ = self.dynamic_model(states_seq, actions_squeezed, hidden=None)
+            # pred_rewards: (T, 1), pred_next_states: (T, num_links, features_per_link)
+            
+            # Compute losses - use TRUE rewards for stable training
+            state_loss = F.mse_loss(pred_next_states, target_next_states)
+            reward_loss = F.mse_loss(pred_rewards, true_rewards)
+            model_loss = state_loss + reward_loss
+            print(f"Model loss: {model_loss.item()}, State loss: {state_loss.item()}, Reward loss: {reward_loss.item()}")
+            
+            model_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.dynamic_model.parameters(), max_norm=0.5)
+            self.model_optimizer.step()
+            
+            total_loss += model_loss.item()
+        
+        return total_loss / self.model_train_steps  # Return average loss
+
+    def dream(self, num_rollouts=None, horizon=None):
+        """
+        Generate simulated transitions using the learned dynamics model.
+        
+        Args:
+            num_rollouts: Number of rollouts to generate (default: self.dream_rollouts)
+            horizon: Steps per rollout (default: self.dream_horizon)
+            
+        Returns:
+            rollouts: List of dicts, each containing a single rollout's transitions.
+                      Each dict has 'states', 'actions', 'next_states', 'rewards', 'dones'.
+                      Returns None if no rollouts generated.
+        """
+        if not self.use_dyna:
+            return None
+            
+        num_rollouts = num_rollouts or self.dream_rollouts
+        horizon = horizon or self.dream_horizon
+        
+        buffer_len = len(self.transition_dict['states'])
+        if buffer_len == 0:
+            return None
+        
+        # Sample random starting indices
+        indices = random.sample(range(buffer_len), min(num_rollouts, buffer_len))
+        
+        rollouts = []  # List of individual rollouts
+        
+        with torch.no_grad():
+            for idx in indices:
+                # Initialize per-rollout storage
+                rollout_states = []
+                rollout_actions = []
+                rollout_next_states = []
+                rollout_rewards = []
+                rollout_dones = []
+                
+                # Get starting state and hidden states
+                state = torch.tensor(self.transition_dict['states'][idx], dtype=torch.float).to(self.device)
+                actor_h = self.transition_dict['actor_hiddens'][idx]
+                model_h = self.transition_dict['model_hiddens'][idx]
+                
+                for step in range(horizon):
+                    # Reshape state for network: (obs_dim,) -> (1, obs_dim)
+                    state_input = state.unsqueeze(0)
+                    
+                    # Get action from policy
+                    mu, sigma, actor_h = self.actor(state_input, actor_h)
+                    action_dist = torch.distributions.Normal(mu.squeeze(), sigma.squeeze())
+                    action = action_dist.sample()
+                    
+                    if self.use_delta_actions:
+                        action = torch.clamp(action, -self.max_delta, self.max_delta)
+                    else:
+                        action = torch.clamp(action, self.act_low.to(self.device), self.act_high.to(self.device))
+                    
+                    # Predict next state and reward using dynamics model
+                    pred_reward, pred_next_state, model_h = self.dynamic_model(
+                        state_input, action.unsqueeze(0), model_h
+                    )
+                    # pred_next_state: (1, num_links, features_per_link) -> flatten
+                    next_state = pred_next_state.squeeze(0).view(-1)  # (obs_dim,)
+                    reward = pred_reward.squeeze()  # scalar
+                    
+                    # Store transition in this rollout
+                    rollout_states.append(state.cpu().numpy())
+                    rollout_actions.append(action.cpu().numpy())
+                    rollout_next_states.append(next_state.cpu().numpy())
+                    rollout_rewards.append(reward.cpu().numpy())
+                    # Mark last step as done to break value bootstrap
+                    rollout_dones.append(step == horizon - 1)
+                    
+                    # Advance state
+                    state = next_state
+                
+                # Add this rollout to list (only if non-empty)
+                if len(rollout_states) > 0:
+                    rollouts.append({
+                        'states': rollout_states,
+                        'actions': rollout_actions,
+                        'next_states': rollout_next_states,
+                        'rewards': rollout_rewards,
+                        'dones': rollout_dones
+                    })
+        
+        return rollouts if len(rollouts) > 0 else None
+
+    def _ppo_update_on_data(self, states, actions, rewards, next_states, dones, epochs=None):
+        """
+        Perform PPO update on given data (real or simulated).
+        
+        Args:
+            states: (T, obs_dim) tensor
+            actions: (T, act_dim) tensor
+            rewards: (T, 1) tensor
+            next_states: (T, obs_dim) tensor
+            dones: (T, 1) tensor
+            epochs: Number of PPO epochs (default: self.epochs)
+        """
+        epochs = epochs or self.epochs
+        
+        # Prepare sequences for network forward pass
+        states_seq = states.unsqueeze(0)  # (1, T, obs_dim)
+        next_states_seq = next_states.unsqueeze(0)
+
+        # Compute targets with no_grad
+        with torch.no_grad():
+            next_values, _ = self.value_net(next_states_seq)
+            next_values = next_values.squeeze(0)
+
+            current_values, _ = self.value_net(states_seq)
+            current_values = current_values.squeeze(0)
+
+            td_target = rewards + self.gamma * next_values * (1 - dones)
+            td_delta = td_target - current_values
+
+            advantage = compute_gae(self.gamma, self.lmbda, td_delta.cpu()).to(self.device)
+            advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
+
+            mu, std, _ = self.actor(states_seq)
+            mu = mu.squeeze(0)
+            std = std.squeeze(0)
+            action_dist = torch.distributions.Normal(mu, std)
+            old_log_probs = action_dist.log_prob(actions)
+
+        # PPO epochs
+        T_total = states_seq.size(1)
+        for _ in range(epochs):
+            actor_hidden = None
+            critic_hidden = None
+            self.actor_optimizer.zero_grad()
+            self.critic_optimizer.zero_grad()
+
+            for t in range(0, T_total, self.tm_window):
+                end_t = min(t + self.tm_window, T_total)
+                chunk_len = end_t - t
+                chunk_weight = float(chunk_len) / float(T_total)
+                states_chunk = states_seq[:, t:end_t, :]
+                actions_chunk = actions[t:end_t]
+                old_log_probs_chunk = old_log_probs[t:end_t]
+                advantage_chunk = advantage[t:end_t]
+                td_target_chunk = td_target[t:end_t]
+
+                if actor_hidden is not None:
+                    actor_hidden = (actor_hidden[0].detach(), actor_hidden[1].detach())
+                if critic_hidden is not None:
+                    critic_hidden = (critic_hidden[0].detach(), critic_hidden[1].detach())
+
+                mu, std, actor_hidden = self.actor(states_chunk, actor_hidden)
+                mu = mu.squeeze(0)
+                std = std.squeeze(0)
+                action_dist = torch.distributions.Normal(mu, std)
+                entropy = action_dist.entropy().mean()
+                log_probs = action_dist.log_prob(actions_chunk)
+                log_ratio = (log_probs - old_log_probs_chunk).clamp(-20, 20)
+                ratio = torch.exp(log_ratio)
+                surr1 = ratio * advantage_chunk
+                surr2 = torch.clamp(ratio, 1 - self.clip_eps, 1 + self.clip_eps) * advantage_chunk
+                actor_loss = (torch.mean(-torch.min(surr1, surr2)) - self.entropy_coef * entropy) * chunk_weight
+
+                current_values, critic_hidden = self.value_net(states_chunk, critic_hidden)
+                current_values = current_values.squeeze(0)
+                critic_loss = torch.mean(F.mse_loss(current_values, td_target_chunk)) * chunk_weight
+
+                actor_loss.backward()
+                critic_loss.backward()
+
+                with torch.no_grad():
+                    approx_kl = (log_probs - old_log_probs_chunk).mean()
+                    if approx_kl > 1.5 * self.kl_tolerance:
+                        break
+
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=0.5)
+            torch.nn.utils.clip_grad_norm_(self.value_net.parameters(), max_norm=0.5)
+            self.actor_optimizer.step()
+            self.critic_optimizer.step()
 
     def get_config(self) -> dict:
         """Get agent configuration for saving/loading."""
@@ -999,6 +881,13 @@ class PPOAgent:
             'num_lstm_layers': self.num_lstm_layers,
         })
 
+        # Dyna-PPO settings
+        config.update({
+            'use_dyna': self.use_dyna,
+            'dream_rollouts': self.dream_rollouts,
+            'dream_horizon': self.dream_horizon,
+        })
+
         return config
 
     def save(self, path: str):
@@ -1007,7 +896,7 @@ class PPOAgent:
         if self.use_param_noise and self._param_noise_applied:
             self._restore_actor_params()
         
-        torch.save({
+        save_dict = {
             'actor_state_dict': self.actor.state_dict(),
             'critic_state_dict': self.value_net.state_dict(),
             'actor_optimizer_state_dict': self.actor_optimizer.state_dict(),
@@ -1017,7 +906,13 @@ class PPOAgent:
             'current_entropy_coef': self.entropy_coef,
             'current_param_noise_std': self.param_noise_std if self.use_param_noise else None,
             'current_action_noise_std': self.action_noise_std if self.use_action_noise else None,
-        }, path)
+        }
+        # Save dynamics model if using Dyna
+        if self.use_dyna:
+            save_dict['dynamic_model_state_dict'] = self.dynamic_model.state_dict()
+            save_dict['model_optimizer_state_dict'] = self.model_optimizer.state_dict()
+        
+        torch.save(save_dict, path)
 
     def load(self, path: str):
         """Load agent model parameters and training state."""
@@ -1038,3 +933,8 @@ class PPOAgent:
         # Restore action noise state if available
         if 'current_action_noise_std' in checkpoint and checkpoint['current_action_noise_std'] is not None:
             self.action_noise_std = checkpoint['current_action_noise_std']
+        # Restore dynamics model if using Dyna
+        if self.use_dyna and 'dynamic_model_state_dict' in checkpoint:
+            self.dynamic_model.load_state_dict(checkpoint['dynamic_model_state_dict'])
+            if 'model_optimizer_state_dict' in checkpoint:
+                self.model_optimizer.load_state_dict(checkpoint['model_optimizer_state_dict'])
