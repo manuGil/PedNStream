@@ -558,7 +558,30 @@ def save_all_agents(agents: dict, save_dir: str, metadata: dict = None,
     # Save checkpoint
     torch.save(checkpoint, save_path / 'checkpoint.pt')
     
-    # Save configs and metadata
+    # Helper function to convert numpy/torch types to Python native types
+    def _convert_to_python_types(obj):
+        """Recursively convert numpy/torch types to Python native types for JSON serialization."""
+        import numpy as np
+        import torch
+        
+        if isinstance(obj, dict):
+            return {key: _convert_to_python_types(value) for key, value in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [_convert_to_python_types(item) for item in obj]
+        elif isinstance(obj, (np.integer, np.int64, np.int32, np.int16, np.int8)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64, np.float32, np.float16)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, torch.Tensor):
+            return obj.item() if obj.numel() == 1 else obj.tolist()
+        elif isinstance(obj, (np.bool_, bool)):
+            return bool(obj)
+        else:
+            return obj
+    
+    # Save configs and metadata (convert types for JSON serialization)
     config_data = {
         'agent_configs': configs,
         'metadata': metadata or {},
