@@ -583,8 +583,8 @@ def save_all_agents(agents: dict, save_dir: str, metadata: dict = None,
     
     # Save configs and metadata (convert types for JSON serialization)
     config_data = {
-        'agent_configs': configs,
-        'metadata': metadata or {},
+        'agent_configs': _convert_to_python_types(configs),
+        'metadata': _convert_to_python_types(metadata or {}),
         'saved_at': datetime.now().isoformat(),
     }
     
