@@ -590,7 +590,7 @@ def save_all_agents(agents: dict, save_dir: str, metadata: dict = None,
     
     # Include normalization stats if provided
     if normalization_stats is not None:
-        config_data['normalization_stats'] = normalization_stats
+        config_data['normalization_stats'] = _convert_to_python_types(normalization_stats)
     
     with open(save_path / 'config.json', 'w') as f:
         json.dump(config_data, f, indent=2)
