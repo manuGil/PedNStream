@@ -1795,3 +1795,250 @@ def compute_gae(gamma: float, lmbda: float, td_delta: torch.Tensor) -> torch.Ten
     advantage_list.reverse()
     return torch.tensor(np.array(advantage_list), dtype=torch.float)
 
+
+# =============================================================================
+# Sequential Curriculum Training
+# =============================================================================
+
+def train_sequential_curriculum(
+    agent,
+    scenario_sequence: list,
+    env_factory,
+    episodes_per_stage: int = 50,
+    delta_actions: bool = True,
+    randomize: bool = True,
+    val_freq: int = 10,
+    num_val_episodes: int = 3,
+    save_dir: str = None,
+    use_wandb: bool = False,
+):
+    """
+    Train a single agent sequentially through multiple scenarios (curriculum learning).
+    
+    Transfers weights between stages, resets optimizer at each new stage.
+    Validates on current scenario during training, final validation on all scenarios.
+    
+    Note: The agent_id is obtained automatically from the first environment's 
+    possible_agents list (assumes single-agent training).
+    
+    Args:
+        agent: PPOAgent instance (weights transferred between stages)
+        scenario_sequence: List of dataset names, e.g., ["butterfly_scA", "butterfly_scB", ...]
+        env_factory: Callable that creates environment given dataset name.
+                     Signature: env_factory(dataset: str) -> env
+        episodes_per_stage: Number of episodes to train per scenario
+        delta_actions: If True, agent outputs delta actions
+        randomize: If True, randomize environment at reset
+        val_freq: Validation frequency (episodes) within each stage
+        num_val_episodes: Number of validation episodes
+        save_dir: Directory to save checkpoints (saves best per stage)
+        use_wandb: If True, log metrics to wandb
+        
+    Returns:
+        dict: {
+            'stage_returns': {scenario: [episode_returns]},
+            'final_validation': {scenario: avg_return}
+        }
+    """
+    try:
+        import wandb
+        WANDB_AVAILABLE = True
+    except ImportError:
+        WANDB_AVAILABLE = False
+    
+    from tqdm import tqdm
+    
+    stage_returns = {scenario: [] for scenario in scenario_sequence}
+    global_episode = 0
+    agent_id = None  # Will be set from first environment
+    
+    for stage_idx, scenario in enumerate(scenario_sequence):
+        print("=" * 60)
+        print(f"Stage {stage_idx + 1}/{len(scenario_sequence)}: {scenario}")
+        print("=" * 60)
+        
+        # Create environment for this scenario
+        env = env_factory(scenario)
+        
+        # Get agent_id from the first environment (single agent training)
+        # if agent_id is None:
+        agent_id = env.possible_agents[0]
+        print(f"  Training agent: {agent_id}")
+        
+        # Reset optimizer at stage transition (keeps weights, clears momentum)
+        if stage_idx > 0:
+            agent.reset_optimizer()
+            print(f"  Optimizer reset for new stage")
+        
+        # Track best return for this stage
+        best_stage_return = float('-inf')
+        
+        # Training loop for this stage
+        with tqdm(total=episodes_per_stage, desc=f'Stage {stage_idx + 1}') as pbar:
+            for ep in range(episodes_per_stage):
+                # Reset buffer for new episode
+                agent.reset_buffer()
+                
+                # Reset environment
+                if ep == 0 and stage_idx == 0:
+                    # First episode of first stage: no randomization for baseline
+                    obs, infos = env.reset(options={'randomize': False})
+                else:
+                    obs, infos = env.reset(options={'randomize': randomize})
+                
+                episode_return = 0.0
+                episode_true_return = 0.0
+                done = False
+                step = 0
+                
+                while not done:
+                    # Get observation for this agent
+                    agent_obs = obs[agent_id]
+                    
+                    # Take action
+                    action = agent.take_action(agent_obs)
+                    
+                    # Convert delta to absolute action if needed
+                    if delta_actions:
+                        current_gate_widths = agent_obs.reshape(agent.act_dim, -1)[:, -1]
+                        absolute_action = current_gate_widths + action
+                        absolute_action = np.clip(absolute_action, agent.act_low.numpy(), agent.act_high.numpy())
+                    else:
+                        absolute_action = action
+                    
+                    # Create action dict for env (single agent)
+                    actions = {agent_id: absolute_action}
+                    
+                    # Step environment
+                    next_obs, rewards, terms, truncs, infos = env.step(actions)
+                    
+                    # Store transition
+                    reward = rewards[agent_id]
+                    true_reward = infos[agent_id].get('true_reward', reward) if agent_id in infos else reward
+                    
+                    agent.store_transition(
+                        state=agent_obs,
+                        action=action,
+                        next_state=next_obs[agent_id],
+                        reward=reward,
+                        done=terms[agent_id],
+                        true_reward=true_reward
+                    )
+                    
+                    episode_return += reward
+                    episode_true_return += true_reward
+                    obs = next_obs
+                    step += 1
+                    
+                    done = any(terms.values()) or any(truncs.values())
+                
+                # Update agent
+                agent.update()
+                
+                # Track returns
+                stage_returns[scenario].append(episode_true_return)
+                global_episode += 1
+                
+                # Log to wandb
+                if use_wandb and WANDB_AVAILABLE and wandb.run is not None:
+                    wandb.log({
+                        'global_episode': global_episode,
+                        'stage': stage_idx + 1,
+                        'scenario': scenario,
+                        'episode_return': episode_true_return,
+                        'episode_steps': step
+                    })
+                
+                # Validation and save best
+                if save_dir and (ep + 1) % val_freq == 0:
+                    # Validate on current scenario
+                    val_result = validate_agents(
+                        env, {agent_id: agent},
+                        delta_actions=delta_actions,
+                        num_episodes=num_val_episodes,
+                        randomize=True
+                    )
+                    val_return = val_result['avg_return']
+                    
+                    if val_return > best_stage_return:
+                        best_stage_return = val_return
+                        # Save checkpoint
+                        stage_save_dir = f"{save_dir}/stage_{stage_idx}_{scenario}"
+                        save_all_agents(
+                            {agent_id: agent},
+                            stage_save_dir,
+                            metadata={
+                                'stage': stage_idx,
+                                'scenario': scenario,
+                                'episode': ep + 1,
+                                'val_return': val_return
+                            }
+                        )
+                        print(f"\n  [Val] New best for {scenario}: {val_return:.3f} (saved)")
+                
+                # Update progress bar
+                pbar.set_postfix({
+                    'return': f'{episode_true_return:.2f}',
+                    'best': f'{best_stage_return:.2f}',
+                    'steps': step
+                })
+                pbar.update(1)
+        
+        print(f"  Stage {stage_idx + 1} complete. Best validation return: {best_stage_return:.3f}")
+    
+    # Final validation on ALL scenarios
+    print("\n" + "=" * 60)
+    print("Final Validation on All Scenarios")
+    print("=" * 60)
+    
+    final_validation = {}
+    
+    # Load the best agent from the last stage's checkpoint for evaluation
+    if save_dir:
+        last_scenario = scenario_sequence[-1]
+        last_stage_idx = len(scenario_sequence) - 1
+        last_stage_save_dir = f"{save_dir}/stage_{last_stage_idx}_{last_scenario}"
+        loaded_agents, _ = load_all_agents(save_dir=last_stage_save_dir)
+        eval_agent = loaded_agents[agent_id]
+        print(f"  Loaded agent from: {last_stage_save_dir}")
+    else:
+        eval_agent = agent  # Use in-memory agent if no save_dir
+    
+    for scenario in scenario_sequence:
+        val_env = env_factory(scenario)
+        # Get agent_id from this scenario's environment
+        val_agent_id = val_env.possible_agents[0]
+        val_result = validate_agents(
+            val_env, {val_agent_id: eval_agent},
+            delta_actions=delta_actions,
+            num_episodes=num_val_episodes,
+            randomize=True
+        )
+        final_validation[scenario] = val_result['avg_return']
+        print(f"  {scenario}: {val_result['avg_return']:.3f}")
+    
+    avg_all_scenarios = np.mean(list(final_validation.values()))
+    print(f"  Average across all scenarios: {avg_all_scenarios:.3f}")
+    print("=" * 60)
+    
+    # Update metadata with validation results
+    if save_dir:
+        final_save_dir = f"{save_dir}/final"
+        save_all_agents(
+            {agent_id: eval_agent},
+            final_save_dir,
+            metadata={
+                'scenario_sequence': scenario_sequence,
+                'episodes_per_stage': episodes_per_stage,
+                'final_validation': final_validation,
+                'avg_all_scenarios': avg_all_scenarios
+            }
+        )
+        print(f"Final model metadata updated with validation results")
+    
+    return {
+        'stage_returns': stage_returns,
+        'final_validation': final_validation,
+        'avg_all_scenarios': avg_all_scenarios
+    }
+
