@@ -555,45 +555,55 @@ class PedNetParallelEnv(ParallelEnv):
             if agent_type == 'gate':
                 node = self.agent_manager.get_gater_node(agent_id)
                 out_links = self.agent_manager.get_gater_outgoing_links(agent_id)
-                link_rewards = 0.0
+                agent_rewards = 0.0
                 all_densities = []
-
+                tt_term = 0
+                flow_term = 0
                 for link in out_links:
-                    link_flow = 0.0
-                    link_travel_time = 0.0
+                    # link_flow = 0.0
+                    # link_travel_time = 0.0
                     link_excess_density_penalty = 0.0
                     density = link.get_density(self.sim_step)
                     all_densities.append(density)
                     T_ell = link.travel_time[self.sim_step] if self.sim_step < len(link.travel_time) else link.travel_time[0]
                     T_ell_reverse = link.reverse_link.travel_time[self.sim_step] if self.sim_step < len(link.reverse_link.travel_time) else link.reverse_link.travel_time[0]
-                    link_flow += link.link_flow[self.sim_step] if self.sim_step < len(link.outflow) else 0.0
-                    link_flow += link.reverse_link.link_flow[self.sim_step] if self.sim_step < len(link.reverse_link.outflow) else 0.0
+                    link_flow_forward = link.link_flow[self.sim_step] if self.sim_step < len(link.outflow) else 0.0
+                    link_flow_reverse = link.reverse_link.link_flow[self.sim_step] if self.sim_step < len(link.reverse_link.outflow) else 0.0
+                    link_flow = link_flow_forward + link_flow_reverse
                     T_free = link.length/link.free_flow_speed
+                    # number of pedestrians
+                    # num_peds = link.num_pedestrians[self.sim_step] if self.sim_step < len(link.num_pedestrians) else 0.0
+                    # num_peds += link.reverse_link.num_pedestrians[self.sim_step] if self.sim_step < len(link.reverse_link.num_pedestrians) else 0.0
                     # normed_density = density/link.k_jam
-                    link_travel_time += T_ell + T_ell_reverse
-                    # link_rewards += link_flow
-
+                    link_travel_time = T_ell + T_ell_reverse
+                    
                     # normalize the travel time by the free flow travel time
                     # T_max = 1000
-                    norm_link_travel_time = np.log(link_travel_time / 2 / T_free)
+                    norm_link_travel_time = np.clip(np.log(link_travel_time / 2 / T_free), 0, 2)
                     norm_link_flow = np.clip((link_flow / 2) / (link.free_flow_speed * link.k_critical), 0, 1)
                     # print(norm_link_travel_time, norm_link_flow)
-                    link_rewards -= norm_link_travel_time
-                    link_rewards += norm_link_flow
+                    # link_rewards -= norm_link_travel_time
+                    # link_rewards += norm_link_flow
+                    tt_term -= norm_link_travel_time
+                    flow_term += norm_link_flow
                     # if density > 4:                 # density penalty
                     #     link_excess_density_penalty -= 1 * (density - 4)
-                # Variance penalty
-                # variance_penalty_weight = 0.0
-                # if len(all_densities) > 1:
-                #     avg_density = np.mean(all_densities)
-                #     diff = np.mean(np.abs(np.array(all_densities) - avg_density))
-                #     # diff = np.var(all_densities)
-                #     penalty = variance_penalty_weight * diff
-                #     link_rewards -= penalty
+                # Fairness
+                diff_term = 0.0
+                if len(all_densities) > 1 and np.max(all_densities) > 4:
+                    avg_density = np.mean(all_densities)
+                    diff_term = -np.mean(np.abs(np.array(all_densities) - avg_density))
+                    # diff = np.var(all_densities)
+                    # penalty = variance_penalty_weight * diff
+                    # link_rewards -= penalty
 
-
-                rewards[agent_id] = link_rewards
-            return rewards
+                w1 = 1.0  # throughput
+                w2 = 1.0  # delay
+                w3 = 0.0  # fairness
+                agent_rewards = w1*flow_term + w2*tt_term + w3*diff_term
+                # print(f"Agent {agent_id} reward components: flow={flow_term:.3f}, tt={tt_term:.3f}, diff={diff_term:.3f}, total={agent_rewards:.3f}")
+                rewards[agent_id] = agent_rewards
+        return rewards
 
     def _check_terminations(self) -> Dict[str, bool]:
         """
