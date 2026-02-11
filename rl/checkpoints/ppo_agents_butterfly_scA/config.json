@@ -31,7 +31,7 @@
       "use_param_noise": false,
       "param_noise_std": 0.1,
       "param_noise_std_min": 0,
-      "use_action_noise": true,
+      "use_action_noise": false,
       "action_noise_std": 0.1,
       "action_noise_std_min": 0.01,
       "total_updates": 80,
@@ -41,18 +41,18 @@
   },
   "metadata": {
     "episode": 100,
-    "val_avg_return": -439185.6875,
+    "val_avg_return": -844.3893432617188,
     "val_episode_returns": [
-      -432920.21875,
-      -592639.3125,
-      -275976.59375,
-      -275477.0625,
-      -618915.3125
+      -909.021240234375,
+      -865.5752563476562,
+      -866.4307250976562,
+      -681.8348999023438,
+      -899.0847778320312
     ],
     "val_agent_returns": {
-      "gate_2": -439185.6875
+      "gate_2": -844.3893432617188
     },
     "num_val_episodes": 5
   },
-  "saved_at": "2026-01-30T22:40:33.943206"
+  "saved_at": "2026-02-02T16:11:12.872817"
 }

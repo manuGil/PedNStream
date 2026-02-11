@@ -12,10 +12,10 @@
       ],
       "act_high": [
         6.0,
-        5.0,
-        0.009999999776482582,
-        5.0,
-        0.009999999776482582
+        2.0,
+        2.0,
+        2.0,
+        3.0
       ],
       "gamma": 0.99,
       "lmbda": 0.96,
@@ -31,7 +31,7 @@
       "use_param_noise": false,
       "param_noise_std": 0.1,
       "param_noise_std_min": 0,
-      "use_action_noise": true,
+      "use_action_noise": false,
       "action_noise_std": 0.1,
       "action_noise_std_min": 0.01,
       "total_updates": 80,
@@ -40,19 +40,19 @@
     }
   },
   "metadata": {
-    "episode": 150,
-    "val_avg_return": -746039.0625,
+    "episode": 80,
+    "val_avg_return": -85.94348907470703,
     "val_episode_returns": [
-      -843503.0625,
-      -740356.6875,
-      -627718.9375,
-      -888670.625,
-      -629945.6875
+      -156.88607788085938,
+      -61.2126350402832,
+      -211.0126953125,
+      25.471776962280273,
+      -26.077808380126953
     ],
     "val_agent_returns": {
-      "gate_2": -746039.0625
+      "gate_2": -85.94348907470703
     },
     "num_val_episodes": 5
   },
-  "saved_at": "2026-01-30T23:35:47.751475"
+  "saved_at": "2026-02-02T16:03:41.976272"
 }
