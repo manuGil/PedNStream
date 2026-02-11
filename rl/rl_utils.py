@@ -322,7 +322,33 @@ def validate_agents(env, agents, delta_actions: bool = False, num_episodes: int 
             'agent_returns': dict  # Per-agent average returns
         }
     """
-    # Check if any agent uses stacked observations
+    # 1. Set environment to eval mode (stop updating normalization stats)
+    # Save original training flag to restore later
+    original_training = None
+    if hasattr(env, 'set_training'):
+        original_training = getattr(env, 'training', True)
+        env.set_training(False)
+        
+    # 2. Disable parameter noise for deterministic validation
+    # Store original states to restore later
+    param_noise_states = {}
+    for aid, agent in agents.items():
+        if hasattr(agent, 'use_param_noise'):
+            param_noise_states[aid] = agent.use_param_noise
+            agent.use_param_noise = False
+            # Ensure we are using clean weights (no noise)
+            if hasattr(agent, '_param_noise_applied') and agent._param_noise_applied:
+                if hasattr(agent, '_restore_actor_params'):
+                    agent._restore_actor_params()
+    
+    # 3. Set networks to eval mode (affects LayerNorm, Dropout, etc.)
+    for agent in agents.values():
+        if hasattr(agent, 'actor'):
+            agent.actor.eval()
+        if hasattr(agent, 'value_net'):
+            agent.value_net.eval()
+
+    # Check if any agent uses stacked observations (for manual stacking logic)
     first_agent_id = next(iter(agents))
     uses_stacked_obs = hasattr(agents[first_agent_id], 'stack_size')
     
