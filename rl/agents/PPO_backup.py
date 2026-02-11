@@ -628,7 +628,7 @@ class AttentionPolicy(nn.Module):
         # --- IMPROVEMENT END ---
 
         # Layer normalization on coordinated features (per link, per timestep)
-        # self.layer_norm = nn.LayerNorm(hidden_size)
+        self.layer_norm = nn.LayerNorm(hidden_size)
 
         # Per-link action heads (Shared weights, applied per link)
         self.mean_head = nn.Linear(hidden_size, 1)
@@ -669,7 +669,7 @@ class AttentionPolicy(nn.Module):
         # Residual connection (optional but recommended)
         coordinated_features = link_features + attn_out
         # Apply layer normalization for stability
-        # coordinated_features = self.layer_norm(coordinated_features)
+        coordinated_features = self.layer_norm(coordinated_features)
         
         # 5. Final Heads
         # The 'coordinated_features' now contains info from self + all other links
@@ -706,7 +706,7 @@ class AttentionValueNetwork(nn.Module):
         )
         
         # Layer normalization on coordinated features
-        # self.layer_norm = nn.LayerNorm(hidden_size)
+        self.layer_norm = nn.LayerNorm(hidden_size)
 
         # 4. Global Value Head
         # Takes the aggregated system state and outputs 1 value
@@ -745,7 +745,7 @@ class AttentionValueNetwork(nn.Module):
         # Residual Connection (Important for gradient flow)
         coordinated_features = link_features + attn_out # (seq_len, num_links, hidden_size)
         # Apply layer normalization
-        # coordinated_features = self.layer_norm(coordinated_features)
+        coordinated_features = self.layer_norm(coordinated_features)
 
         # --- Phase 3: Global Aggregation ---
         # Now that every link vector contains info about the global state (thanks to attention),
@@ -878,6 +878,7 @@ def train_on_policy_multi_agent(env, agents, delta_actions=False, num_episodes=5
                             next_state = stored_next_state,
                             reward = rewards[agent_id],
                             done = terms[agent_id],
+                            true_reward = infos[agent_id].get('true_reward', rewards[agent_id])
                         )
                         episode_returns[agent_id] += rewards[agent_id]
                         # Track true (un-normalized) rewards if available
@@ -904,6 +905,12 @@ def train_on_policy_multi_agent(env, agents, delta_actions=False, num_episodes=5
 
                 # Update all agents
                 for agent_id, agent in agents.items():
+                    # Before calling agent.update()
+                    if hasattr(env, 'ret_rms') and env.ret_rms is not None:
+                        try:
+                            agent.set_reward_normalizer_var(float(env.ret_rms.var))
+                        except:
+                            pass
                     agent.update()
 
                 # Increment global episode counter
@@ -931,7 +938,7 @@ def train_on_policy_multi_agent(env, agents, delta_actions=False, num_episodes=5
                         env, agents, agents_saved_dir,
                         delta_actions=delta_actions,
                         num_val_episodes=num_val_episodes,
-                        randomize=True, # always randomize during validation
+                        randomize=True,  # Validate on randomized configs to test generalization
                         best_avg_return=best_avg_return,
                         global_episode=global_episode,
                         use_wandb=use_wandb and WANDB_AVAILABLE
@@ -1099,6 +1106,9 @@ class PPOAgent:
                                           num_layers=num_lstm_layers)
             self.value_net = AttentionValueNetwork(obs_dim, act_dim, hidden_size=lstm_hidden_size,
                                                    num_layers=num_lstm_layers)
+        # Store learning rates for optimizer reset
+        self.actor_lr = actor_lr
+        self.critic_lr = critic_lr
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
         self.critic_optimizer = torch.optim.Adam(self.value_net.parameters(), lr=critic_lr)
         self.device = device
@@ -1129,6 +1139,11 @@ class PPOAgent:
         # Apply parameter noise at the start of each episode
         if self.use_param_noise:
             self._apply_param_noise()
+
+    def reset_optimizer(self):
+        """Reset optimizer state (keeps network weights, clears momentum). Used for curriculum learning."""
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.actor_lr)
+        self.critic_optimizer = torch.optim.Adam(self.value_net.parameters(), lr=self.critic_lr)
 
     def _apply_param_noise(self):
         """Apply Gaussian noise to actor network parameters for exploration."""
@@ -1180,7 +1195,7 @@ class PPOAgent:
         self.action_noise_std = self.action_noise_std_initial + \
             (self.action_noise_std_min - self.action_noise_std_initial) * progress
 
-    def store_transition(self, state, action, next_state, reward, done):
+    def store_transition(self, state, action, next_state, reward, done, true_reward=None):
         """Store transition in buffer."""
         self.transition_dict['states'].append(state)
         self.transition_dict['actions'].append(action)
