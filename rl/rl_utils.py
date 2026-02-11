@@ -358,70 +358,121 @@ def validate_agents(env, agents, delta_actions: bool = False, num_episodes: int 
     all_episode_returns = []
     agent_total_returns = {agent_id: 0.0 for agent_id in agents.keys()}
     
-    for ep in range(num_episodes):
-        # Reset environment
-        obs, infos = env.reset(options={'randomize': randomize})
-        
-        # Initialize state history queues for stacked observations
-        state_history_queue = {}
-        state_stack = {}
-        if uses_stacked_obs:
-            for agent_id in agents.keys():
-                state_history_queue[agent_id] = collections.deque(maxlen=stack_size)
-                for _ in range(stack_size):
-                    state_history_queue[agent_id].append(obs[agent_id])
-                state_stack[agent_id] = np.array(state_history_queue[agent_id])
-        
-        episode_true_returns = {agent_id: 0.0 for agent_id in agents.keys()}
-        done = False
-        
-        while not done:
-            actions = {}
-            absolute_actions = {}
+    try:
+        for ep in range(num_episodes):
+            # Reset environment
+            obs, infos = env.reset(options={'randomize': randomize})
             
-            for agent_id, agent in agents.items():
-                # Use stacked state if agent uses stacked observations
-                if agent_id in state_stack:
-                    agent_state = state_stack[agent_id]
-                else:
-                    agent_state = obs[agent_id]
-                
-                # Use deterministic action for validation
-                action = agent.take_action(agent_state, deterministic=True)
-                
-                if delta_actions:
-                    absolute_action = obs[agent_id].reshape(agent.act_dim, -1)[:, -1] + action
-                    absolute_action = np.clip(absolute_action, agent.act_low, agent.act_high)
-                    absolute_actions[agent_id] = absolute_action
-                else:
-                    absolute_actions[agent_id] = action
-                actions[agent_id] = action
+            # Reset stateful agents (e.g., PPO LSTM hidden states)
+            for agent in agents.values():
+                if hasattr(agent, 'reset_buffer'):
+                    # reset_buffer will clear hidden states. 
+                    # Since we set use_param_noise=False, it won't apply new noise.
+                    agent.reset_buffer()
             
-            # Step environment
-            next_obs, rewards, terms, truncs, infos = env.step(absolute_actions)
-            
-            # Update state history queues for stacked observations
+            # Initialize state history queues for stacked observations
+            state_history_queue = {}
+            state_stack = {}
             if uses_stacked_obs:
-                for agent_id in state_history_queue.keys():
-                    state_history_queue[agent_id].append(next_obs[agent_id])
-                    state_stack[agent_id] = np.array(state_history_queue[agent_id])
+                for agent_id in agents.keys():
+                    if agent_id in obs:
+                        state_history_queue[agent_id] = collections.deque(maxlen=stack_size)
+                        for _ in range(stack_size):
+                            state_history_queue[agent_id].append(obs[agent_id])
+                        state_stack[agent_id] = np.array(state_history_queue[agent_id])
             
-            # Accumulate true rewards
-            for agent_id in agents.keys():
-                if agent_id in infos and 'true_reward' in infos[agent_id]:
-                    episode_true_returns[agent_id] += infos[agent_id]['true_reward']
-                else:
-                    episode_true_returns[agent_id] += rewards[agent_id]
+            episode_true_returns = {agent_id: 0.0 for agent_id in agents.keys()}
+            done = False
             
-            obs = next_obs
-            done = any(terms.values()) or any(truncs.values())
+            while not done:
+                actions = {}
+                absolute_actions = {}
+                
+                for agent_id, agent in agents.items():
+                    # Handle dead agents if necessary (basic check)
+                    if agent_id not in obs:
+                        continue
+
+                    # Use stacked state if agent uses stacked observations
+                    if uses_stacked_obs and agent_id in state_stack:
+                        agent_state = state_stack[agent_id]
+                    else:
+                        agent_state = obs[agent_id]
+                    
+                    # Use deterministic action for validation
+                    action = agent.take_action(agent_state, deterministic=True)
+                    
+                    # Determine if this agent uses delta actions
+                    # Check agent attribute first, fall back to global arg
+                    agent_uses_delta = getattr(agent, 'use_delta_actions', delta_actions)
+
+                    if agent_uses_delta:
+                        # CAUTION: If obs is normalized, applying delta to it yields a normalized absolute value.
+                        # For 'gate' agents in RunningNormalizeWrapper, the last feature (gate width) is 
+                        # preserved unnormalized, so this IS correct.
+                        # For other agents, this might be incorrect if they are fully normalized.
+                        
+                        # Assuming last feature is the value to control
+                        current_val = obs[agent_id].reshape(agent.act_dim, -1)[:, -1]
+                        absolute_action = current_val + action
+                        absolute_action = np.clip(
+                            absolute_action,
+                            agent.act_low.numpy() if hasattr(agent.act_low, 'numpy') else agent.act_low,
+                            agent.act_high.numpy() if hasattr(agent.act_high, 'numpy') else agent.act_high
+                        )
+                        absolute_actions[agent_id] = absolute_action
+                    else:
+                        absolute_actions[agent_id] = action
+                    
+                    actions[agent_id] = action
+                
+                # Step environment
+                if not absolute_actions: # All agents done?
+                    break
+                    
+                next_obs, rewards, terms, truncs, infos = env.step(absolute_actions)
+                
+                # Update state history queues for stacked observations
+                if uses_stacked_obs:
+                    for agent_id in state_history_queue.keys():
+                        if agent_id in next_obs:
+                            state_history_queue[agent_id].append(next_obs[agent_id])
+                            state_stack[agent_id] = np.array(state_history_queue[agent_id])
+                
+                # Accumulate true rewards
+                for agent_id in agents.keys():
+                    if agent_id in infos and 'true_reward' in infos[agent_id]:
+                        episode_true_returns[agent_id] += infos[agent_id]['true_reward']
+                    elif agent_id in rewards:
+                        episode_true_returns[agent_id] += rewards[agent_id]
+                
+                obs = next_obs
+                done = any(terms.values()) or any(truncs.values())
+            
+            # Store episode results (handle case where episode_true_returns might be empty if immediate fail)
+            if episode_true_returns:
+                ep_avg_return = np.mean(list(episode_true_returns.values()))
+                all_episode_returns.append(ep_avg_return)
+                
+                for agent_id in agents.keys():
+                    agent_total_returns[agent_id] += episode_true_returns.get(agent_id, 0.0)
+    
+    finally:
+        # Restore environment training mode to its original state
+        if hasattr(env, 'set_training') and original_training is not None:
+            env.set_training(original_training)
+            
+        # Restore parameter noise settings
+        for aid, agent in agents.items():
+            if aid in param_noise_states:
+                agent.use_param_noise = param_noise_states[aid]
         
-        # Store episode results
-        ep_avg_return = np.mean(list(episode_true_returns.values()))
-        all_episode_returns.append(ep_avg_return)
-        
-        for agent_id in agents.keys():
-            agent_total_returns[agent_id] += episode_true_returns[agent_id]
+        # Restore networks to train mode
+        for agent in agents.values():
+            if hasattr(agent, 'actor'):
+                agent.actor.train()
+            if hasattr(agent, 'value_net'):
+                agent.value_net.train()
     
     # Compute averages
     avg_return = np.mean(all_episode_returns)
