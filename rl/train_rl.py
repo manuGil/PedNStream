@@ -48,6 +48,9 @@ if __name__ == "__main__":
     torch.manual_seed(SEED)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(SEED)
+    # Enable deterministic behavior for reproducibility
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
     print("=" * 60)
     print(f"Training {algo} Agents on PedNet Environment")
     print("=" * 60)
