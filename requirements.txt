@@ -12,6 +12,9 @@ stable-baselines3>=2.0.0
 tensorboard>=2.14.0
 ray[rllib]>=2.9.0
 
+# Graph neural network dependencies
+torch-geometric>=2.3.0
+
 # Additional requirements for video generation functionality
 selenium>=4.0.0
 opencv-python>=4.5.0

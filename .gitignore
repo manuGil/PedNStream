@@ -12,6 +12,7 @@
 *.csv
 /outputs
 /fig
+/rl/vis
 /.specstory
 /.cursorindexingignore
 .vscode
