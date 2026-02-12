@@ -141,6 +141,47 @@ if __name__ == "__main__":
             num_val_episodes=5, val_freq=10, use_wandb=False
         )
 
+    elif algo == "ppo_tbptt":
+        agents = {agent_id: PPOAgent_tbptt(
+            obs_dim=env.observation_space(agent_id).shape[0],
+            act_dim=env.action_space(agent_id).shape[0],
+            act_low=env.action_space(agent_id).low,
+            act_high=env.action_space(agent_id).high,
+            actor_lr=1e-4,
+            critic_lr=2e-4,
+            use_lr_decay=True,
+            gamma=0.99,
+            lmbda=0.96,
+            entropy_coef=0.04,
+            kl_tolerance=0.02,
+            entropy_coef_min=0.001,
+            use_delta_actions=True,
+            max_delta=2.5,
+            lstm_hidden_size=64,
+            num_lstm_layers=1,
+            use_param_noise=False,
+            use_action_noise=False,
+            num_episodes=200,
+            tm_window=50,  # truncate backpropagation window
+            epochs=10
+
+        ) for agent_id in env.possible_agents}
+
+        # agents, config_data = load_all_agents(save_dir=f"./checkpoints/{algo}_agents_butterfly_scA", device="cpu")
+        # return_dict, _ = train_on_policy_multi_agent(
+        #     env, agents, num_episodes=200, delta_actions=True,
+        #     randomize=randomize, agents_saved_dir=f"./checkpoints/ppo_tbptt_agents_{dataset}",
+        #     num_val_episodes=5, val_freq=10, use_wandb=False
+        # )
+        # env.set_training(True)
+        return_dict, _ = train_on_policy_multi_agent_batch(
+            env, agents, num_episodes=200, num_trajectories_per_update=1, delta_actions=True,
+            randomize=randomize, agents_saved_dir=f"./checkpoints/ppo_tbptt_agents_{dataset}",
+            num_val_episodes=10, val_freq=10, use_wandb=True,
+            debug_save_dir=f"rl_training/{dataset}/ppo_tbptt_debug",
+            debug_save_episodes=[5, 50, 100, 150, 200]
+        )
+
     elif algo == "pome":
         agents = {agent_id: POMEAgent(
             obs_dim=env.observation_space(agent_id).shape[0],
