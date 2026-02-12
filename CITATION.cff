@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: If you use this software, please cite it using these metadata.
+title: PedNStream
+abstract: PedNStream is a light-weight/Python-native pedestrian traffic simulation tool based on the Link Transmission Model (LTM). It enables modeling and simulation of pedestrian movements through complex networks, providing insights into crowd dynamics and flow behaviors.
+authors:
+  - name: Weiming Mai
+    orcid: ""
+version: 1.0.0-alpha
+date-released: 2026-02-12
+identifiers:
+  - description: This is the collection of archived snapshots of all versions of PedNStream
+    type: doi
+    value: ""
+  - description: This is the archived snapshot of version x.xx.x of PedNStream
+    type: doi
+    value: ""
+license: MIT License
+repository-code: https://github.com/WaimenMak/PedNStream
