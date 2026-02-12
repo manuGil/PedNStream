@@ -41,8 +41,8 @@ classifiers = [
 dev = [
   "pytest",
   "ruff",
-  "sphinx==8.2.0",
-  "myst-parser==4.0.1",
+  "sphinx",
+  "myst-parser",
   "sphinx-rtd-theme",
 ]
 video = [
