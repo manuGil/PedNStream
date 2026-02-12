@@ -1,0 +1,93 @@
+# Netwrok
+network:
+  origin_nodes: [0, 6]
+  destination_nodes: [0, 2, 6, 8]
+  adjacency_matrix: [
+    [0, 1, 0, 0, 0, 0, 0, 0, 0], # Node 0
+    [1, 0, 0, 1, 1, 1, 0, 0, 0], # Node 1
+    [0, 0, 0, 1, 0, 0, 0, 0, 0], # Node 2
+    [0, 1, 1, 0, 1, 0, 0, 1, 0], # Node 3
+    [0, 1, 0, 1, 0, 1, 0, 1, 0], # Node 4
+    [0, 1, 0, 0, 1, 0, 1, 1, 0], # Node 5
+    [0, 0, 0, 0, 0, 1, 0, 0, 0], # Node 6
+    [0, 0, 0, 1, 1, 1, 0, 0, 1], # Node 7
+    [0, 0, 0, 0, 0, 0, 0, 1, 0]  # Node 8
+    ]
+
+
+
+# Simulation Parameters
+simulation:
+  simulation_steps: 600
+  unit_time: 10
+  assign_flows_type: "classic"
+  path_finder:
+    k_paths: 5
+    temp: 6 # temperature parameter for softmax, lower the sharper the distribution
+    alpha: 8 # distance weight
+    beta: 3 # congestion weight
+    omega: 3 # capacity weight
+    std_dev: 0.05 # standard deviation for stochastic path choice
+
+# Default Link Parameters
+default_link:
+  length: 50
+  width: 4
+  free_flow_speed: 1.1
+  k_critical: 2
+  k_jam: 6
+  gamma: 0.01
+  speed_noise_std: 0.01
+  fd_type: "yperman"
+  activity_probability: 0.1
+  bi_factor: 1
+
+
+# Link-specific Parameters (optional)
+links:
+  "0_1":
+    width: 8
+  "6_5":
+    width: 8
+  "8_7":
+    width: 8
+  "2_3":
+    width: 8
+  "1_5":
+    length: 60
+  "5-7":
+    length: 60
+  "1_3":
+    length: 60
+  "3_7":
+    length: 60
+
+
+controllers:
+   enabled: true  # Set to true to enable controller-based path expansion
+   nodes: [4]  # List of node IDs that act as controllers
+#   links: ["1-4"]
+
+# Demand Configuration
+demand:
+  origin_0:
+   pattern: "sudden_demand"
+   peak_lambda: 70
+   base_lambda: 30
+
+  origin_6:
+   pattern: "gaussian_peaks"
+   peak_lambda: 60
+   base_lambda: 30
+
+
+od_flows:
+ "0_2": 0
+ "0_6": 5
+ "0_8": 8
+ "6_2": 3
+ "6_0": 0
+ "6_8": 0
+
+
+

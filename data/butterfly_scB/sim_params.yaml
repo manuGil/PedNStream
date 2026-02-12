@@ -32,7 +32,7 @@ simulation:
 # Default Link Parameters
 default_link:
   length: 50
-  width: 3
+  width: 2
   free_flow_speed: 1.1
   k_critical: 2
   k_jam: 6
@@ -48,21 +48,23 @@ default_link:
 # scenario B: one to multiple
 links:
  "2_3":
-   front_gate_width: 2.5
+   front_gate_width: 2
  "2_4":
-   front_gate_width: 2.5
+   front_gate_width: 2
  "2_5":
-   front_gate_width: 2.5
+   front_gate_width: 3
+   width: 3
  "3_6":
    length: 30
-   front_gate_width: 3
+   front_gate_width: 1
  "0_2":
    width: 6
  "4_6":
-   front_gate_width: 3
+   front_gate_width: 1
    length: 30
  "5_6":
-   front_gate_width: 3
+   front_gate_width: 2
+   length: 70
 
 
 
@@ -81,7 +83,7 @@ demand:
   origin_0:
    pattern: "sudden_demand"
    peak_lambda: 100
-   base_lambda: 60
+   base_lambda: 80
 
 #  origin_26:
 #   pattern: "gaussian_peaks"

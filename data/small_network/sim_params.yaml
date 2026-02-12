@@ -23,7 +23,7 @@ simulation:
     temp: 5 # temperature parameter for softmax, lower the sharper the distribution
     alpha: 6 # distance weight
     beta: 2 # congestion weight
-    omega: 5 # capacity weight
+    omega: 4 # capacity weight
     std_dev: 0.05 # standard deviation for stochastic path choice
 
 # Default Link Parameters
@@ -42,9 +42,9 @@ default_link:
 
 # Link-specific Parameters (optional)
 links:
-  "1_2":
+  "1_3":
     length: 30
-  "2_5":
+  "3_5":
     length: 30
   "0_1":
     width: 7

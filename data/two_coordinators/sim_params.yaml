@@ -1,87 +1,103 @@
 # Netwrok
 network:
-  origin_nodes: [30, 18]
-  destination_nodes: [18, 30]
+  origin_nodes: [22, 29]
+  destination_nodes: [26, 22]
 
 
 # Simulation Parameters
 simulation:
-  simulation_steps: 700
+  simulation_steps: 500
   unit_time: 10
   assign_flows_type: "classic"
   path_finder:
-    k_paths: 10
+    k_paths: 5
     temp: 5 # temperature parameter for softmax, lower the sharper the distribution
-    alpha: 5 # distance weight
+    alpha: 6 # distance weight
     beta: 2 # congestion weight
-    omega: 5 # capacity weight
+    omega: 4 # capacity weight
+    std_dev: 0.05 # standard deviation for stochastic path choice
 
 # Default Link Parameters
 default_link:
   length: 50
-  width: 4
+  width: 3.5
   free_flow_speed: 1.1
   k_critical: 2
   k_jam: 6
   gamma: 0.01
-  speed_noise_std: 0.05
+  speed_noise_std: 0
   fd_type: "yperman"
-  activity_probability: 0
+  activity_probability: 0.1
   bi_factor: 1
 
 
 # Link-specific Parameters (optional)
-#links:
-#  "15_8":
-#    length: 120
-#    width: 1.5
-#    free_flow_speed: 1.5
-#    k_critical: 2
-#    k_jam: 10
+links:
+  "22_23":
+    width: 7
+  "22_21":
+    length: 1000
+    width: 0.01
+  "26_25":
+    width: 7
+  "26_27":
+    length: 1000
+    width: 0.01
 
-#  "15_6":
-#    length: 30
+  "22_29":
+    length: 1000
+    width: 0.01
+
+  "22_15":
+    length: 1000
+    width: 0.01
+
+  "26_33":
+    length: 1000
+    width: 0.01
+
+  "26_19":
+    length: 1000
+    width: 0.01
+
+  "24_31":
+    length: 1000
+    width: 0.01
+
+  "24_17":
+    length: 1000
+    width: 0.01
 
 controllers:
    enabled: true  # Set to true to enable controller-based path expansion
-   nodes: [24]  # List of node IDs that act as controllers
+   nodes: [23]  # List of node IDs that act as controllers
 #   nodes: [25, 31, 23, 11, 19]
 #   links: ["1-4"]
 
 # Demand Configuration
 demand:
-#  origin_0:
-#    pattern: "gaussian_peaks"
-#    peak_lambda: 60
-#    base_lambda: 40
-#
-#  origin_48:
-#    pattern: "gaussian_peaks"
-#    peak_lambda: 60
-#    base_lambda: 40
+  origin_22:
+   pattern: "sudden_demand"
+   peak_lambda: 80
+   base_lambda: 70
 
-  origin_30:
+  origin_25:
    pattern: "gaussian_peaks"
-   peak_lambda: 50
-   base_lambda: 30
+   peak_lambda: 20
+   base_lambda: 10
 
-  origin_18:
-   pattern: "gaussian_peaks"
-   peak_lambda: 50
-   base_lambda: 30
-
-#  origin_40:
-#    pattern: "sudden_demand"
-#    peak_lambda: 40
-#    base_lambda: 20
+  origin_29:
+    pattern: "sudden_demand"
+    peak_lambda: 40
+    base_lambda: 20
 ##
 #  origin_8:
 #    pattern: "constant"
 #    value: 30
 
 #od_flows:
-# "30_18": 10
-# "40_18": 15
+# "22_26": 10
+# "26_22": 15
 # "40_30": 15
 # "8_18": 5
 # "8_30": 10
