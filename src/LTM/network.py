@@ -296,7 +296,7 @@ class Network:
                     node=node
                 )
             # node flow assignment
-            if node.node_id in self.path_finder.nodes_in_paths:
+            if self.path_finder is None or node.node_id in self.path_finder.nodes_in_paths:
                 if isinstance(node, OneToOneNode):
                     node.assign_flows(time_step)
                 else: # regular node
