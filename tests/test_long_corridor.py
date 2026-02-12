@@ -9,6 +9,7 @@ import matplotlib
 matplotlib.use('macosx')
 import numpy as np
 import matplotlib.pyplot as plt
+import pytest
 from handlers.output_handler import OutputHandler
 
 # Now you can import using the project structure
@@ -16,12 +17,11 @@ from src.utils.visualizer import NetworkVisualizer
 from src.LTM.network import Network
 from pathlib import Path
 
-from pytest import fixture
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(project_root)
 
-@fixture
+@pytest.fixture
 def adj():    
     adj = np.array([[0, 1, 0, 0, 0, 0],
                     [1, 0, 1, 0, 0, 0],
@@ -31,7 +31,7 @@ def adj():
                     [0, 0, 0, 0, 1, 0]])
     return adj
 
-@fixture
+@pytest.fixture
 def params():
 
     return {
@@ -64,12 +64,10 @@ def params():
     }
 
 
-@fixture
+@pytest.fixture
 def network_env(params,adj):
     
     return Network(adj, params, origin_nodes=[5, 0])
-
-    ## network_env.visualize() # TODO: this is not necessary in testing
 
 class TestLongCorridor:
     def test_run_simulation(self, params, network_env):
