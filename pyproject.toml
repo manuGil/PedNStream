@@ -19,7 +19,7 @@ dependencies = [
     "torch-geometric>=2.3.0"
 ]
 
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 authors = [
   { name = "John Doe", email = "id@tudelft.nl" },
   # Add more authors as needed
@@ -62,6 +62,9 @@ Changelog = "https://github.com/WaimenMak/PedNStream/main/CHANGELOG.md"
 
 [tool.hatch.version]
 path = "src/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = "src"
