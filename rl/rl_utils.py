@@ -1836,6 +1836,13 @@ def evaluate_agents(env, agents, delta_actions: bool = False, deterministic: boo
             print(f"  Total reward: {total_reward_mean:.3f}")
         print("=" * 60)
     
+    # Restore networks to train mode
+    for agent in agents.values():
+        if hasattr(agent, 'actor'):
+            agent.actor.train()
+        if hasattr(agent, 'value_net'):
+            agent.value_net.train()
+    
     return {
         'episode_rewards': episode_rewards_mean,
         'episode_rewards_std': episode_rewards_std if num_runs > 1 else {agent_id: 0.0 for agent_id in agents.keys()},
