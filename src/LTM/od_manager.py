@@ -70,6 +70,7 @@ class DemandGenerator:
             'gaussian_peaks': self.generate_gaussian_peaks,
             'constant': self.generate_constant,
             'sudden_demand': self.generate_sudden_demand,
+            'multi_peaks': self.generate_multi_peaks,
         }
 
     def register_pattern(self, pattern_name: str, pattern_func: Callable):
@@ -97,6 +98,7 @@ class DemandGenerator:
         except KeyError:
             self.logger.info(f"No demand configuration found for origin {origin_id}, using defaults")
             return DemandConfig()
+    
 
     def generate_gaussian_peaks(self, origin_id: int, params=None) -> np.ndarray:
         """Built-in gaussian peaks demand pattern"""
@@ -121,6 +123,47 @@ class DemandGenerator:
         demand[start_step:start_step + sudden_period] += np.random.randint(20, 50)
         
         return demand
+
+    def generate_multi_peaks(self, origin_id: int, params=None) -> np.ndarray:
+        """
+        Generate demand pattern with multiple peaks of different values.
+        Uses same config as other patterns (base_lambda, peak_lambda).
+        
+        Randomly generates 2-5 peaks at evenly spaced positions with random
+        multipliers (0.5x-1.5x) applied to peak_lambda.
+        
+        Configuration in YAML (same as other patterns):
+        demand:
+          origin_0:
+            pattern: 'multi_peaks'
+            base_lambda: 5.0
+            peak_lambda: 15.0
+        """
+        config = self._get_demand_config(origin_id)
+        t = self.simulation_steps
+        
+        # Random number of peaks (1-4)
+        num_peaks = np.random.randint(1, 4)
+        
+        # Evenly space peaks across simulation time (avoid edges)
+        positions = np.linspace(t * 0.15, t * 0.85, num_peaks)
+        
+        # Random multipliers for each peak (0.5x to 1.5x)
+        multipliers = np.random.uniform(0.5, 1.5, num_peaks)
+        
+        # Random widths for each peak (t/30 to t/10)
+        widths = np.random.uniform(t / 30, t / 10, num_peaks)
+        
+        # Generate peaks
+        lambda_t = np.full(self.simulation_steps, config.base_lambda, dtype=float)
+        for pos, mult, width in zip(positions, multipliers, widths):
+            peak = config.peak_lambda * mult * np.exp(-(self.time - pos)**2 / (2 * width**2))
+            lambda_t += peak
+        
+        # Only reseed if seed is explicitly provided, otherwise use current random state
+        if self.seed is not None:
+            np.random.seed(self.seed)
+        return np.random.poisson(lam=lambda_t)
 
     def generate_custom(self, origin_id: int, pattern: str) -> np.ndarray:
         """

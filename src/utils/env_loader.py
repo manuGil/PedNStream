@@ -17,6 +17,7 @@ import numpy as np
 import pickle
 from src.utils.config import load_config
 from typing import List, Callable
+import copy
 
 class NetworkEnvGenerator:
     """The input of this class is the simulation parameters, and the output is the network environment."""
@@ -30,6 +31,7 @@ class NetworkEnvGenerator:
         self.network = None
         self.network_data = None
         self.config = None
+        self._original_config = None  # Store pristine config from YAML for randomization base
 
     def load_network_data(self, data_path: str) -> dict:
         """
@@ -48,6 +50,9 @@ class NetworkEnvGenerator:
 
         # load the simulation parameters
         self.config = load_config(yaml_file_path)
+        # Store original config for randomization base (only on first load)
+        if self._original_config is None:
+            self._original_config = copy.deepcopy(self.config)
 
         #if exists, load the edge distances
         if os.path.exists(os.path.join(self.data_dir, f"{data_path}", "edge_distances.pkl")):
@@ -82,15 +87,20 @@ class NetworkEnvGenerator:
                        custom_demand_functions: List[Callable] = None,
                        od_flows: dict = None,
                        link_params_overrides: dict = None,
-                       demand_params_overrides: dict = None):
-        """Create network from saved data, simulation_params is the config dict of the yaml file"""
+                       demand_params_overrides: dict = None,
+                       verbose: bool = True):
+        """Create network from saved data, simulation_params is the config dict of the yaml file
+        
+        Args:
+            verbose: If True, enable logging output. Default True for backward compatibility.
+        """
         if self.network_data is None:
             self.network_data = self.load_network_data(yaml_file_path)
 
         # Set up the simulation params, Add link-specific parameters using edge distances
         default_link_params = self.config['params']['default_link']
         
-        # Apply link-specific overrides
+        # Apply link-specific overrides for randomization
         if link_params_overrides:
             if 'links' not in self.config['params']:
                 self.config['params']['links'] = {}
@@ -103,7 +113,7 @@ class NetworkEnvGenerator:
         if od_flows: # override the od flows
             self.config['od_flows'] = od_flows
             
-        if demand_params_overrides: # override the demand params for origin nodes
+        if demand_params_overrides: # override the demand params for origin nodes for randomization
              # Ensure 'demand' dictionary exists in params
             if 'demand' not in self.config['params']:
                 self.config['params']['demand'] = {}
@@ -141,7 +151,15 @@ class NetworkEnvGenerator:
                 self.config['params']['links'][link_id] = final_params
                 # if reverse link not in the config, add it
                 if f"{v}_{u}" not in self.config['params']['links']:
-                    self.config['params']['links'][f"{v}_{u}"] = final_params
+                    # Create a copy of final_params for reverse link and swap front/back gate widths
+                    reverse_params = final_params.copy()
+                    original_front = reverse_params.pop('front_gate_width', None)
+                    original_back = reverse_params.pop('back_gate_width', None)
+                    if original_front is not None:
+                        reverse_params['back_gate_width'] = original_front
+                    if original_back is not None:
+                        reverse_params['front_gate_width'] = original_back
+                    self.config['params']['links'][f"{v}_{u}"] = reverse_params
 
         # Create network
         self.network = Network(
@@ -152,63 +170,103 @@ class NetworkEnvGenerator:
             # demand_pattern=self.config.get('demand_pattern', None),
             demand_pattern=custom_demand_functions,
             od_flows=self.config.get('od_flows', None),
-            pos=self.network_data.get('node_positions')
+            pos=self.network_data.get('node_positions'),
+            verbose=verbose
         )
 
         return self.network
 
-    def randomize_network(self, yaml_file_path: str, seed: int = None, randomize_params: dict = None):
+    def randomize_network(self, yaml_file_path: str, seed: int = None, randomize_params: dict = None, verbose: bool = True):
         """
         Randomize network parameters
         Args:
             yaml_file_path: Path to the network data folder
-            seed: Random seed for reproducibility
+            seed: Random seed for reproducibility, not used in RL
             randomize_params: Dictionary containing randomization parameters
+            verbose: If True, enable logging output. Default True for backward compatibility.
         """
-        reset_od_nodes = self.generate_random_od_nodes(seed)
-        reset_link_params = self.generate_random_link_params(seed)
-        reset_od_flows = self.generate_random_od_flows(seed)
-        reset_demand_params = self.generate_random_demand_params(seed)
+        # Set random seed for reproducibility BEFORE any random operations
+        if seed is not None:
+            np.random.seed(seed)
+            import random
+            random.seed(seed)
+        
+        # reset_od_nodes = self.generate_random_od_nodes()
+        # reset_link_params = self.generate_random_link_params()
+        reset_od_flows = self.generate_random_od_flows()
+        reset_demand_params = self.generate_random_demand_params()
 
         
         # Create network with overrides
         network = self.create_network(
             yaml_file_path, 
             od_flows=reset_od_flows, 
-            link_params_overrides=reset_link_params,
+            # link_params_overrides=reset_link_params,
             demand_params_overrides=reset_demand_params,
+            verbose=verbose,
         )
         return network
 
-    def generate_random_demand_params(self, seed: int = None) -> dict:
+    def generate_random_demand_params(self) -> dict:
         """
         Generate randomized demand generation parameters (patterns, lambdas).
+        Uses original YAML config values as base and applies perturbation.
+        For new origins not in original config, randomly picks params from an existing origin.
         
         Args:
-            seed: Random seed for reproducibility
             
         Returns:
             Dictionary {origin_key: {param: value}}
         """
-        if seed is not None:
-            np.random.seed(seed)
-            
+        # Use randomized origin nodes, but original YAML demand config as perturbation base
         origin_nodes = self.config.get('origin_nodes', [])
+        original_demand_config = self._original_config['params'].get('demand', {})
         demand_params = {}
         
-        available_patterns = ['gaussian_peaks', 'constant', 'sudden_demand']
+        available_patterns = ['gaussian_peaks', 'constant', 'sudden_demand', 'multi_peaks']
+        
+        # Default values if not specified in config
+        default_base_lambda = 10.0
+        default_peak_lambda = 30.0
+        
+        # Collect all original demand configs for fallback
+        original_origin_keys = list(original_demand_config.keys())
         
         for origin in origin_nodes:
             origin_key = f'origin_{origin}'
             
-            # Randomize pattern
-            pattern = np.random.choice(available_patterns)
+            # Try to get config for this origin from original YAML
+            if origin_key in original_demand_config:
+                # Origin exists in original config - use its params
+                origin_config = original_demand_config[origin_key]
+            elif original_origin_keys:
+                # New origin not in original config - pick params from a random original origin
+                random_original_key = np.random.choice(original_origin_keys)
+                origin_config = original_demand_config[random_original_key]
+            else:
+                # No original config at all - use defaults
+                origin_config = {}
             
-            # Randomize flow parameters
-            base_lambda = np.random.uniform(2.0, 10.0)
-            peak_lambda = np.random.uniform(10.0, 30.0)
+            # Randomize pattern (use existing as more likely choice)
+            existing_pattern = origin_config.get('pattern', None)
+            if existing_pattern and np.random.random() < 0.5:
+                # 70% chance to keep existing pattern
+                pattern = existing_pattern
+            else:
+                pattern = np.random.choice(available_patterns)
             
-            # Ensure peak is significantly higher than base for interesting scenarios
+            # Get base values from config or use defaults
+            config_base_lambda = origin_config.get('base_lambda', default_base_lambda)
+            config_peak_lambda = origin_config.get('peak_lambda', default_peak_lambda)
+            
+            # Apply perturbation: +/- 30% of the config value
+            perturbation_factor = np.random.uniform(0.7, 1.5)
+            base_lambda = config_base_lambda * perturbation_factor
+            
+            perturbation_factor = np.random.uniform(0.7, 1.5)
+            peak_lambda = config_peak_lambda * perturbation_factor
+            
+            # Ensure peak is higher than base
             if peak_lambda < base_lambda + 5:
                 peak_lambda = base_lambda + 5
             
@@ -216,25 +274,55 @@ class NetworkEnvGenerator:
                 'pattern': pattern,
                 'base_lambda': float(base_lambda),
                 'peak_lambda': float(peak_lambda),
-                'seed': seed # Propagate seed to demand generator
             }
+        
+        # Optionally shuffle demand profiles across origins for extra diversity
+        demand_params = self._shuffle_demand_among_origins(demand_params)
             
         return demand_params
 
-    def generate_random_od_flows(self, seed: int = None) -> dict:
+    def _shuffle_demand_among_origins(self, demand_params: dict, shuffle_prob: float = 0.3) -> dict:
+        """
+        Shuffle demand configurations among origins with some probability.
+        When triggered, randomly permutes the demand profiles (pattern + lambdas)
+        across origin nodes, so that e.g. a typically low-demand origin may receive
+        a high-demand profile and vice versa.
+        
+        This increases training diversity by decoupling demand characteristics from
+        their original spatial assignment.
+        
+        Args:
+            demand_params: Dictionary {origin_key: {pattern, base_lambda, peak_lambda}}
+                           as produced by generate_random_demand_params.
+            shuffle_prob: Probability of performing the shuffle (default 0.3).
+            
+        Returns:
+            demand_params with profiles potentially reassigned across origins.
+        """
+        origin_keys = list(demand_params.keys())
+        if len(origin_keys) < 2 or np.random.random() >= shuffle_prob:
+            return demand_params
+        
+        # Extract the profiles (values) and shuffle them
+        profiles = [demand_params[k] for k in origin_keys]
+        shuffled_indices = np.random.permutation(len(origin_keys))
+        
+        shuffled_params = {}
+        for i, key in enumerate(origin_keys):
+            shuffled_params[key] = profiles[shuffled_indices[i]]
+        
+        return shuffled_params
+
+    def generate_random_od_flows(self) -> dict:
         """
         Generate randomized OD flows ratio for the network.
         The values represent the relative weight/preference for each destination, not absolute flow.
         
         Args:
-            seed: Random seed for reproducibility
             
         Returns:
             Dictionary {(o,d): weight_array} where weight_array is numpy array of size simulation_steps+1
         """
-        if seed is not None:
-            np.random.seed(seed)
-            
         origin_nodes = self.config.get('origin_nodes', [])
         destination_nodes = self.config.get('destination_nodes', [])
         simulation_steps = self.config['params']['simulation_steps']
@@ -246,37 +334,60 @@ class NetworkEnvGenerator:
                 if o == d:
                     continue
                 
-                # Assign a random weight to this OD pair (e.g., uniform between 1 and 10)
-                # This controls the split ratio: flow(o->d) / flow(o->d') = weight(d) / weight(d')
-                base_weight = np.random.uniform(1.0, 10.0)
+                # Generate time-varying weights to represent changing OD proportions
+                # Choose a random pattern for this OD pair
+                pattern_type = np.random.choice(['constant', 'linear', 'sine', 'random_walk'])
+                # pattern_type = 'sine'
                 
-                # Create weight array (constant over time for this episode)
-                # This ensures consistent destination preference throughout the simulation
-                weights = np.full(simulation_steps + 1, base_weight)
+                if pattern_type == 'constant':
+                    # Constant weight over time
+                    base_weight = np.random.uniform(0, 10.0)
+                    weights = np.full(simulation_steps + 1, base_weight)
+                    
+                elif pattern_type == 'linear':
+                    # Linear increase or decrease
+                    start_weight = np.random.uniform(0, 10.0)
+                    end_weight = np.random.uniform(1.0, 10.0)
+                    weights = np.linspace(start_weight, end_weight, simulation_steps + 1)
+                    
+                elif pattern_type == 'sine':
+                    # Sinusoidal variation (e.g., rush hour patterns)
+                    base_weight = np.random.uniform(3.0, 7.0)
+                    amplitude = np.random.uniform(1.0, 3.0)
+                    frequency = np.random.uniform(0.5, 2.0)
+                    time_steps = np.arange(simulation_steps + 1)
+                    weights = base_weight + amplitude * np.sin(2 * np.pi * frequency * time_steps / simulation_steps)
+                    weights = np.clip(weights, 0.0, 10.0)  # Keep within reasonable bounds
+                    
+                else:  # random_walk
+                    # Random walk for unpredictable variation
+                    base_weight = np.random.uniform(3.0, 7.0)
+                    weights = [base_weight]
+                    for _ in range(simulation_steps):
+                        step = np.random.uniform(-0.5, 0.5)
+                        new_weight = np.clip(weights[-1] + step, 0.0, 10.0)
+                        weights.append(new_weight)
+                    weights = np.array(weights)
                 
                 od_flows[(o, d)] = weights
                 
         return od_flows
         
-    def generate_random_od_nodes(self, seed: int = None) -> dict:
+    def generate_random_od_nodes(self) -> dict:
         """
-        Perturbate origin and destination nodes based on default configuration.
-        Maintains spatial realism by adding nodes near existing ODs.
+        Add 1-2 random origin nodes to the existing configuration.
+        Keeps original origins and destinations unchanged, only adds new origins.
         
         Constraint: Controller nodes cannot be origins or destinations.
         
         Args:
-            seed: Random seed for reproducibility
             
         Returns:
             Dictionary {'origin_nodes': [...], 'destination_nodes': [...]}
         """
-        if seed is not None:
-            np.random.seed(seed)
-        
-        # Start from predefined ODs
-        original_origins = self.config.get('origin_nodes', []).copy()
-        original_destinations = self.config.get('destination_nodes', []).copy()
+        # Start from predefined ODs in original YAML config (not modified config)
+        original_origins = self._original_config.get('origin_nodes', []).copy()
+        original_destinations = self._original_config.get('destination_nodes', []).copy()
         
         # Get adjacency matrix for neighbor lookup
         adj_matrix = self.network_data['adjacency_matrix']
@@ -297,77 +408,44 @@ class NetworkEnvGenerator:
             
             return list(neighbors)
         
-        # === Perturbate Origins ===
+        # Add 1-2 new origins: randomly choose from neighbors or from destinations
         new_origins = original_origins.copy()
         
-        # 1. ADD: Add new origins near existing origins (spatial clustering)
-        if np.random.random() < 0.5:
+        if np.random.random() < 0:
+            # Option 1: Add from spatial neighbors of existing origins
             neighbor_candidates = get_neighbors(new_origins, hop=2)
-            # Exclude controller nodes and existing origins
             candidates = [n for n in neighbor_candidates 
-                         if n not in new_origins and n not in self.network.controller_nodes]
-            if candidates:
-                num_to_add = np.random.randint(1, min(2, len(candidates) + 1))
-                new_origins.extend([int(x) for x in np.random.choice(candidates, num_to_add, replace=False)])
+                         if n not in new_origins 
+                         and n not in self.network.controller_nodes
+                         and n not in original_destinations]
+        else:
+            # Option 2: Add from original destination nodes
+            candidates = [n for n in original_destinations 
+                         if n not in new_origins 
+                         and n not in self.network.controller_nodes]
         
-        # 2. REMOVE: Randomly remove origins - keep at least 1
-        if len(new_origins) > 1 and np.random.random() < 0.5:
-            num_to_remove = np.random.randint(1, min(2, len(new_origins)))
-            indices_to_remove = np.random.choice(len(new_origins), num_to_remove, replace=False)
-            new_origins = [o for i, o in enumerate(new_origins) if i not in indices_to_remove]
+        if candidates:
+            num_to_add = np.random.randint(1, min(3, len(candidates) + 1))  # Add 1-2 nodes
+            new_origins.extend([int(x) for x in np.random.choice(candidates, num_to_add, replace=False)])
         
-        # 3. SWAP: Replace an origin with a spatial neighbor
-        if np.random.random() < 0.5:
-            origin_to_swap = np.random.choice(new_origins)
-            neighbors = get_neighbors([origin_to_swap], hop=2)
-            # Exclude controller nodes and existing origins
-            valid_neighbors = [n for n in neighbors 
-                              if n not in new_origins and n not in self.network.controller_nodes]
-            if valid_neighbors:
-                new_node = int(np.random.choice(valid_neighbors))
-                new_origins[new_origins.index(origin_to_swap)] = new_node
-        
-        # === Perturbate Destinations ===
+        # Keep destinations unchanged
         new_destinations = original_destinations.copy()
-        
-        # ADD: Add new destinations near existing destinations
-        if np.random.random() < 0.5:
-            neighbor_candidates = get_neighbors(new_destinations, hop=2)
-            # Exclude controller nodes and existing destinations
-            candidates = [n for n in neighbor_candidates 
-                         if n not in new_destinations and n not in self.network.controller_nodes]
-            if candidates:
-                num_to_add = np.random.randint(1, min(3, len(candidates) + 1))
-                new_destinations.extend([int(x) for x in np.random.choice(candidates, num_to_add, replace=False)])
-        
-        # REMOVE: Remove destinations (keep at least as many as origins)
-        if len(new_destinations) > len(new_origins) and np.random.random() < 0.5:
-            removable = [d for d in new_destinations if d not in new_origins]
-            if removable:
-                num_to_remove = np.random.randint(1, min(2, len(removable) + 1))
-                to_remove = [int(x) for x in np.random.choice(removable, num_to_remove, replace=False)]
-                new_destinations = [d for d in new_destinations if d not in to_remove]
         
         # Ensure all values are native Python int (not np.int64)
         new_origins = [int(x) for x in new_origins]
         new_destinations = [int(x) for x in new_destinations]
         
-        # # ENFORCE CONSTRAINT: All origins must be in destinations
-        # new_destinations = list(set(new_destinations) | set(new_origins))
         self.config['origin_nodes'] = new_origins
         self.config['destination_nodes'] = new_destinations
         return {'origin_nodes': new_origins, 'destination_nodes': new_destinations}
         
         
 
-    def generate_random_link_params(self, seed: int = None) -> dict:
+    def generate_random_link_params(self) -> dict:
         """
         Generate randomized parameters for specific links.
         This focuses on local perturbations (incidents, bottlenecks) rather than global shifts.
         """
-        if seed is not None:
-            np.random.seed(seed)
-            
         # Get all valid links from the dataset
         # We access the data directly to know the topology
         if not self.network_data:

@@ -183,10 +183,21 @@ class Network:
         # Check both possible keys: i_j and j_i
         forward_key = f'{i}_{j}'
         reverse_key = f'{j}_{i}'
+        # if forward_key == '2_5':
+        #     pass
         
         if forward_key in links_config:
             return {**default_params, **links_config[forward_key]}
         elif reverse_key in links_config:
+            if "front_gate_width" or "back_gate_width" in links_config[reverse_key]:
+                reverse_link_params = links_config[reverse_key].copy()
+                original_front = reverse_link_params.pop('front_gate_width', None)
+                original_back = reverse_link_params.pop('back_gate_width', None)
+                if original_front is not None:
+                    reverse_link_params['back_gate_width'] = original_front
+                if original_back is not None:
+                    reverse_link_params['front_gate_width'] = original_back
+                return {**default_params, **reverse_link_params}
             return {**default_params, **links_config[reverse_key]}
         else:
             return default_params
@@ -228,8 +239,16 @@ class Network:
                     elif link_type == 'gate':
                         forward_link = Link(f"{i}_{j}", node, self.nodes[j], 
                                           self.simulation_steps, self.unit_time, **link_params)
+                        # Create a copy of link_params for reverse link and swap front/back gate widths
+                        reverse_link_params = link_params.copy()
+                        original_front = reverse_link_params.pop('front_gate_width', None)
+                        original_back = reverse_link_params.pop('back_gate_width', None)
+                        if original_front is not None:
+                            reverse_link_params['back_gate_width'] = original_front
+                        if original_back is not None:
+                            reverse_link_params['front_gate_width'] = original_back
                         reverse_link = Link(f"{j}_{i}", self.nodes[j], node, 
-                                          self.simulation_steps, self.unit_time, **link_params)
+                                          self.simulation_steps, self.unit_time, **reverse_link_params)
                     else:
                         raise ValueError(f"Invalid controller type: {link_type}")
                     
@@ -276,13 +295,14 @@ class Network:
                     od_manager=self.od_manager, 
                     node=node
                 )
-
-            if isinstance(node, OneToOneNode):
-                node.assign_flows(time_step)
-            else:
-                if node.A_ub is None:
-                    node.get_matrix_A()
-                node.assign_flows(time_step, type=self.assign_flows_type)
+            # node flow assignment
+            if node.node_id in self.path_finder.nodes_in_paths:
+                if isinstance(node, OneToOneNode):
+                    node.assign_flows(time_step)
+                else: # regular node
+                    if node.A_ub is None:
+                        node.get_matrix_A()
+                    node.assign_flows(time_step, type=self.assign_flows_type)
             
         self.update_link_states(time_step)
 

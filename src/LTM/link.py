@@ -38,6 +38,8 @@ class Link(BaseLink):
         :param kwargs: Keyword arguments including:
             - length: Length of the link
             - width: Width of the link
+            - back_gate_width: Width of the back gate
+            - front_gate_width: Width of the front gate
             - free_flow_speed: Free flow speed
             - k_critical: Critical density
             - k_jam: Jam density
@@ -51,9 +53,15 @@ class Link(BaseLink):
         # Physical attributes
         self.length = kwargs['length']
         self._width = kwargs['width']  # width of the link
-        self._front_gate_width = self.width  # width of the gate, for gate control in the head
-        self._back_gate_width = self.width  # width of the gate, for gate control in the tail
-        self.back_gate_width_data = self.width * np.ones(simulation_steps + 1)
+        if kwargs.get('back_gate_width', None) is not None:
+            self._back_gate_width = kwargs['back_gate_width']
+        else:
+            self._back_gate_width = self.width  # width of the gate, for gate control in the tail
+        if kwargs.get('front_gate_width', None) is not None:
+            self._front_gate_width = kwargs['front_gate_width']
+        else:
+            self._front_gate_width = self.width  # width of the gate, for gate control in the head
+        self.back_gate_width_data = self._back_gate_width * np.ones(simulation_steps + 1)
         self.free_flow_speed = kwargs['free_flow_speed']
         self.capacity = self.free_flow_speed * kwargs['k_critical']
         self.k_jam = kwargs['k_jam']

@@ -960,7 +960,7 @@ class NetworkVisualizer:
             connection_point = u_pos + 0.08 * direction
             
             # Scale factor for gate width visualization (adjust for readability)
-            scale_factor = 0.07  # Adjust this to make apertures more/less visible
+            scale_factor = 0.1  # Adjust this to make apertures more/less visible
             
             # Calculate aperture endpoints: perpendicular line through connection point
             half_width = gate_width * scale_factor / 2
@@ -971,11 +971,11 @@ class NetworkVisualizer:
             ax.plot(
                 [aperture_start[0], aperture_end[0]],
                 [aperture_start[1], aperture_end[1]],
-                color='darkblue',
+                color='blue',
                 linewidth=2.5,
                 alpha=0.7,
                 zorder=2,  # Draw on top of edges
-                linestyle='--'  # Dashed line
+                linestyle='-'  # Dashed line
             )
 
 

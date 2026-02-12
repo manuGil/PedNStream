@@ -571,14 +571,16 @@ class PathFinder:
                     try:
                         link = self.links[(node.node_id, down_node)]
                         # num_pedestrians.append(self.links[(node.node_id, down_node)].num_pedestrians[time_step-1]) # use the previous time step, current time step is not available is not updated yet
-                        densities.append(link.get_density(time_step-1))
+                        densities.append(np.maximum(link.get_density(time_step-1) - link.k_critical, 0) / (link.k_jam - link.k_critical))
                         capacity = link.receiving_flow[time_step-2] # -2 steps is the most recent, the capacity of -1 step is -1 by default
                         capacities.append(capacity if capacity >= 0 else link.back_gate_width * link.free_flow_speed * link.k_critical * link.unit_time)
                     except KeyError:
+                        # this is the case of origin/destination nodes, with down node id -1
                         densities.append(0)
                         capacities.append(100) # set a high capacity for origin/destination nodes
-                # utilities = self.alpha * np.array(distances) + self.beta * np.array(num_pedestrians)
-                norm_densities = np.maximum(np.array(densities) - 2, 0) / (10 - 2) # 2: k_critical, 10: max density
+
+                # norm_densities = np.maximum(np.array(densities) - 2, 0) / (10 - 2) # 2: k_critical, 10: max density
+                norm_densities = np.array(densities)
                 utilities = (self.alpha * np.array(distances)/(np.sum(distances)+1e-6)
                              + self.beta * norm_densities
                              - self.omega * np.array(capacities)/(np.sum(capacities)+1e-6)) + self.epsilon
