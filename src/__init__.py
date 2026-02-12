@@ -3,3 +3,6 @@
 # @Author  : mmai
 # @FileName: __init__.py
 # @Software: PyCharm
+from ._version import __version__
+
+__all__ = ["__version__"]
