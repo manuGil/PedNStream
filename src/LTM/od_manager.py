@@ -143,7 +143,7 @@ class DemandGenerator:
         t = self.simulation_steps
         
         # Random number of peaks (1-4)
-        num_peaks = np.random.randint(1, 4)
+        num_peaks = np.random.randint(1, 7)
         
         # Evenly space peaks across simulation time (avoid edges)
         positions = np.linspace(t * 0.15, t * 0.85, num_peaks)
