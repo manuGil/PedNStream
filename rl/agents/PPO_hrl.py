@@ -121,7 +121,7 @@ class DurationAttentionPolicy(nn.Module):
         # ---- Duration head (global, discrete) ----
         # Aggregate link features → global feature → duration logits
         self.duration_fc = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size // 2),
+            nn.Linear(hidden_size + act_dim, hidden_size // 2),
             nn.ReLU(),
             nn.Linear(hidden_size // 2, max_duration)
         )
@@ -164,7 +164,7 @@ class DurationAttentionPolicy(nn.Module):
 
         # 5b. Duration head (global): mean-pool over links → logits
         global_feat = coordinated.mean(dim=1)  # (seq_len, hidden_size)
-        dur_logits = self.duration_fc(global_feat)  # (seq_len, max_duration)
+        dur_logits = self.duration_fc(torch.cat([global_feat, mean], dim=-1))  # (seq_len, max_duration)
 
         return mean, std, dur_logits, hidden_out
 
@@ -911,6 +911,8 @@ def train_hrl_multi_agent_batch(env, agents, delta_actions=False, num_episodes=5
     batch_policy_mu = {aid: [] for aid in agents.keys()}
     batch_policy_sigma = {aid: [] for aid in agents.keys()}
     batch_duration_probs = {aid: [] for aid in agents.keys()}
+    # Track actually sampled durations (integers) for logging
+    batch_sampled_durations = {aid: [] for aid in agents.keys()}
 
     num_iterations = 10
     episodes_per_iteration = num_episodes // num_iterations
@@ -946,6 +948,7 @@ def train_hrl_multi_agent_batch(env, agents, delta_actions=False, num_episodes=5
                         batch_policy_mu[agent_id].append(np.atleast_1d(mu))
                         batch_policy_sigma[agent_id].append(np.atleast_1d(sigma))
                         batch_duration_probs[agent_id].append(dur_probs)
+                        batch_sampled_durations[agent_id].append(duration)
 
                         if delta_actions:
                             # Current gate widths are the last features in obs
@@ -1063,15 +1066,16 @@ def train_hrl_multi_agent_batch(env, agents, delta_actions=False, num_episodes=5
                                 for d in range(len(avg_mu)):
                                     log_dict[f'agent_{agent_id}_policy_mu_{d}'] = float(avg_mu[d])
                                     log_dict[f'agent_{agent_id}_policy_sigma_{d}'] = float(avg_sigma[d])
-                            # Duration distribution
+                            # Duration distribution (policy probabilities)
                             if batch_duration_probs[agent_id]:
                                 dur_arr = np.array(batch_duration_probs[agent_id])
                                 avg_dur = np.mean(dur_arr, axis=0)
                                 for d_idx in range(len(avg_dur)):
                                     log_dict[f'agent_{agent_id}_dur_prob_{d_idx+1}'] = float(avg_dur[d_idx])
-                                # Mean chosen duration
+                            # Mean actually chosen duration (sampled integers)
+                            if batch_sampled_durations[agent_id]:
                                 log_dict[f'agent_{agent_id}_avg_chosen_duration'] = float(
-                                    np.sum(avg_dur * np.arange(1, len(avg_dur) + 1)))
+                                    np.mean(batch_sampled_durations[agent_id]))
                         wandb.log(log_dict)
 
                     # Validation
@@ -1094,6 +1098,7 @@ def train_hrl_multi_agent_batch(env, agents, delta_actions=False, num_episodes=5
                     batch_policy_mu = {aid: [] for aid in agents.keys()}
                     batch_policy_sigma = {aid: [] for aid in agents.keys()}
                     batch_duration_probs = {aid: [] for aid in agents.keys()}
+                    batch_sampled_durations = {aid: [] for aid in agents.keys()}
 
                 # Progress bar
                 if (i_episode + 1) % 10 == 0:
