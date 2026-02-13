@@ -64,7 +64,7 @@ Changelog = "https://github.com/WaimenMak/PedNStream/main/CHANGELOG.md"
 path = "src/pednstream/__version__.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src"]
+packages = ["src/pednstream"]
 
 [tool.pytest.ini_options]
 pythonpath = "src"
