@@ -181,7 +181,39 @@ if __name__ == "__main__":
             debug_save_dir=f"rl_training/{dataset}/ppo_tbptt_debug",
             debug_save_episodes=[5, 50, 100, 150, 200]
         )
-
+    elif algo == "ppo_hrl":
+        agents = {agent_id: PPOAgentHRL(
+            obs_dim=env.observation_space(agent_id).shape[0],
+            act_dim=env.action_space(agent_id).shape[0],
+            act_low=env.action_space(agent_id).low,
+            act_high=env.action_space(agent_id).high,
+            actor_lr=1e-4,
+            critic_lr=2e-4,
+            use_lr_decay=False,
+            gamma=0.99,
+            lmbda=0.96,
+            entropy_coef=0.04,
+            kl_tolerance=0.02,
+            use_delta_actions=True,
+            max_delta=2.5,
+            lstm_hidden_size=64,
+            num_lstm_layers=1,
+            num_heads=2,
+            use_param_noise=False,
+            use_action_noise=False,
+            num_episodes=400,
+            tm_window=50,
+            max_duration=7,
+            duration_entropy_coef=0.05,
+        ) for agent_id in env.possible_agents}
+        # agents, config_data = load_all_agents(save_dir=f"./checkpoints/{algo}_agents_butterfly_scB", device="cpu")
+        return_dict, _ = train_hrl_multi_agent_batch(
+            env, agents, num_episodes=400, num_trajectories_per_update=4, delta_actions=True,
+            randomize=randomize, agents_saved_dir=f"./checkpoints/ppo_hrl_agents_{dataset}",
+            num_val_episodes=5, val_freq=10, use_wandb=True,
+            debug_save_dir=f"rl_training/{dataset}/ppo_hrl_debug",
+            debug_save_episodes=[5, 50, 100, 150, 200]
+        )
     elif algo == "pome":
         agents = {agent_id: POMEAgent(
             obs_dim=env.observation_space(agent_id).shape[0],
