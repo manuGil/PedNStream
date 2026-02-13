@@ -88,7 +88,7 @@ class DurationAttentionPolicy(nn.Module):
     The backbone is identical to AttentionPolicy (LSTM + MHA).
     """
 
-    def __init__(self, obs_dim, act_dim, hidden_size=64, num_layers=1,
+    def __init__(self, obs_dim, act_dim, hidden_size=64, num_layers=1, num_heads=2,
                  min_std=1e-3, max_std=2.0, max_duration=5):
         super().__init__()
         self.obs_dim = obs_dim
@@ -109,7 +109,7 @@ class DurationAttentionPolicy(nn.Module):
         self.link_model = nn.Linear(hidden_size, hidden_size)
         self.attention_layer = nn.MultiheadAttention(
             embed_dim=hidden_size,
-            num_heads=2,
+            num_heads=num_heads,
             batch_first=True
         )
         self.layer_norm = nn.LayerNorm(hidden_size)
@@ -177,7 +177,7 @@ class DurationAttentionValueNetwork(nn.Module):
     shorter macro-transition sequences).
     """
 
-    def __init__(self, obs_dim, act_dim, hidden_size=64, num_layers=1):
+    def __init__(self, obs_dim, act_dim, hidden_size=64, num_layers=1, num_heads=2):
         super().__init__()
         self.obs_dim = obs_dim
         self.act_dim = act_dim
@@ -198,7 +198,7 @@ class DurationAttentionValueNetwork(nn.Module):
         # Attention for inter-link coordination
         self.attention = nn.MultiheadAttention(
             embed_dim=hidden_size,
-            num_heads=2,
+            num_heads=num_heads,
             batch_first=True
         )
 
@@ -267,7 +267,7 @@ class PPOAgentHRL:
                  clip_eps=0.2, entropy_coef=0.01, entropy_coef_decay=0.995,
                  entropy_coef_min=0.001, kl_tolerance=0.01,
                  use_delta_actions=False, max_delta=2.5,
-                 lstm_hidden_size=64, num_lstm_layers=1,
+                 lstm_hidden_size=64, num_lstm_layers=1, num_heads=2,
                  use_param_noise=False, param_noise_std=0.1,
                  param_noise_std_min=0.01,
                  use_action_noise=False, action_noise_std=0.1,
@@ -327,12 +327,14 @@ class PPOAgentHRL:
             hidden_size=lstm_hidden_size,
             num_layers=num_lstm_layers,
             max_std=2.0,
-            max_duration=max_duration
+            max_duration=max_duration,
+            num_heads=num_heads
         )
         self.value_net = DurationAttentionValueNetwork(
             obs_dim, act_dim,
             hidden_size=lstm_hidden_size,
-            num_layers=num_lstm_layers
+            num_layers=num_lstm_layers,
+            num_heads=num_heads
         )
 
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
