@@ -586,8 +586,7 @@ class PedNetParallelEnv(ParallelEnv):
                     # link_rewards += norm_link_flow
                     tt_term -= norm_link_travel_time
                     flow_term += norm_link_flow
-                    # if density > 4:                 # density penalty
-                    #     link_excess_density_penalty -= 1 * (density - 4)
+
                 # Fairness
                 diff_term = 0.0
                 if len(all_densities) > 1 and np.max(all_densities) > 4:
@@ -597,7 +596,7 @@ class PedNetParallelEnv(ParallelEnv):
                     # penalty = variance_penalty_weight * diff
                     # link_rewards -= penalty
 
-                w1 = 1.0  # throughput
+                w1 = 2.0  # throughput
                 w2 = 1.0  # delay
                 w3 = 0.0  # fairness
                 agent_rewards = w1*flow_term + w2*tt_term + w3*diff_term
