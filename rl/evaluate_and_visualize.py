@@ -10,6 +10,7 @@ This script allows you to:
 """
 
 import sys
+import os
 from pathlib import Path
 project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
@@ -377,7 +378,7 @@ def run_tests(dataset, algorithms, num_runs=10, seed=42, randomize=False):
         print("=" * 80)
         
         try:
-            if algo in ['ppo', 'sac']:
+            if algo in ['ppo', 'sac', 'ppo_dyna', 'pome', 'ppo_hrl']:
                 # Load RL agents
                 agents_dir = project_root / "rl" / f"{algo}_agents_{dataset}"
                 if not agents_dir.exists():
@@ -388,7 +389,7 @@ def run_tests(dataset, algorithms, num_runs=10, seed=42, randomize=False):
                 
                 # Create environment for evaluation
                 base_env = PedNetParallelEnv(
-                    dataset=dataset, normalize_obs=False, obs_mode="option4", render_mode="animate"
+                    dataset=dataset, normalize_obs=False, obs_mode="option3", render_mode="animate"
                 )
                 env = RunningNormalizeWrapper(base_env, norm_obs=False, norm_reward=False, training=False)
                 
@@ -410,6 +411,56 @@ def run_tests(dataset, algorithms, num_runs=10, seed=42, randomize=False):
                 print(f"\n{algo.upper()} Results:")
                 print(f"  Average reward: {results['avg_reward']:.3f} ± {results['avg_reward_std']:.3f}")
                 print(f"  Total reward: {results['total_reward']:.3f} ± {results['total_reward_std']:.3f}")
+            
+            elif algo.startswith('sb3_'):
+                # Load SB3 model (supports sb3_ppo, sb3_sac, sb3_td3, etc.)
+                from stable_baselines3 import PPO, SAC, TD3, A2C, DDPG
+                import glob
+                
+                # Extract algorithm name (e.g., "ppo" from "sb3_ppo")
+                sb3_algo = algo.replace("sb3_", "")
+                
+                # Find SB3 model for this dataset and algorithm
+                sb3_models_dir = project_root / "rl_models_sb3"
+                if not sb3_models_dir.exists():
+                    print(f"Warning: SB3 models directory {sb3_models_dir} not found, skipping {algo}")
+                    continue
+                
+                # Look for models with fixed naming: sb3_{algo}_agents_{dataset}
+                run_name = f"sb3_{sb3_algo}_agents_{dataset}"
+                best_model_path = sb3_models_dir / run_name / "best_model" / "best_model.zip"
+                
+                if not best_model_path.exists():
+                    print(f"Warning: SB3 model not found at {best_model_path}, skipping {algo}")
+                    continue
+                
+                print(f"Found SB3 model: {best_model_path}")
+                
+                # Import evaluate_model from train_ppo_sb3
+                from rl.train_ppo_sb3 import evaluate_model
+                
+                # Run evaluation (evaluate_model handles environment creation and saving)
+                # Note: We use obs_mode="option3" as that's what SB3 models are typically trained with
+                eval_results = evaluate_model(
+                    model_path=str(best_model_path),
+                    dataset=dataset,
+                    obs_mode="option3",  # SB3 models typically use option3
+                    action_gap=1,
+                    delta_actions=True,
+                    norm_obs=True,  # SB3 models typically use normalized observations
+                    seed=seed,
+                    randomize=randomize,
+                    n_episodes=num_runs,
+                    algo=sb3_algo,  # Pass algorithm name
+                    save_dir=str(project_root / "outputs" / "rl_training" / dataset / algo)
+                )
+                
+                # Convert to compatible format (similar to evaluate_agents return format)
+                # evaluate_model returns avg_reward (mean across episodes) and avg_true_return
+                # We'll use avg_true_return as the main metric
+                print(f"\n{algo.upper()} Results:")
+                print(f"  Average reward: {eval_results['avg_reward']:.3f} ± {eval_results['avg_reward_std']:.3f}")
+                print(f"  Average true return: {eval_results['avg_true_return']:.3f} ± {eval_results['avg_true_return_std']:.3f}")
             
             elif algo == 'rule_based':
                 # Create environment and rule-based agents
@@ -557,7 +608,8 @@ Examples:
     parser.add_argument('--threshold', type=float, default=0.7,
                         help='Congestion threshold ratio (default: 0.7)')
     parser.add_argument('--algorithms', type=str, nargs='+',
-                        default=['ppo', 'sac', 'rule_based', 'optimization_based', 'no_control'],
+                        default=['ppo', 'sac', 'ppo_dyna', 'pome', 'ppo_hrl',
+                         'sb3_ppo', 'rule_based', 'optimization_based', 'no_control'],
                         help='List of algorithms to evaluate (default: ppo sac rule_based optimization_based no_control)')
     parser.add_argument('--run-test', action='store_true',
                         help='Run agents and generate test results before evaluation')
