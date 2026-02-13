@@ -53,7 +53,7 @@ class ObservationBuilder:
         elif self.obs_mode == "option3":
             self.features_per_link = 5  # inoutflow, reverse inoutflow, gate width
         elif self.obs_mode == "option4":
-            self.features_per_link = 2  # inoutflow, reverse inflow, reverse outflow, velocity gate width
+            self.features_per_link = 6  # inoutflow, reverse inflow, reverse outflow, velocity gate width
         elif self.obs_mode == "option5":
             self.features_per_link = 7  # inoutflow, reverse inflow, reverse outflow, velocity, density, gate width
         else:
@@ -150,10 +150,10 @@ class ObservationBuilder:
                 ]
             elif self.obs_mode == "option4":
                 link_features = [
-                    # link.inflow[time_step] if time_step < len(link.inflow) else 0.0,
-                    # link.outflow[time_step] if time_step < len(link.outflow) else 0.0,
-                    # link.reverse_link.inflow[time_step] if time_step < len(link.reverse_link.inflow) else 0.0,
-                    # link.reverse_link.outflow[time_step] if time_step < len(link.reverse_link.outflow) else 0.0,
+                    link.inflow[time_step] if time_step < len(link.inflow) else 0.0,
+                    link.outflow[time_step] if time_step < len(link.outflow) else 0.0,
+                    link.reverse_link.inflow[time_step] if time_step < len(link.reverse_link.inflow) else 0.0,
+                    link.reverse_link.outflow[time_step] if time_step < len(link.reverse_link.outflow) else 0.0,
                     link.get_density(time_step)/link.k_jam if time_step < len(link.speed) else 0.0,
                     link.back_gate_width,
                 ]
@@ -222,11 +222,16 @@ class ObservationBuilder:
                 normalized[start_idx] /= self.flow_norm
                 normalized[start_idx + 1] /= self.flow_norm
             elif self.obs_mode == "option3":
-                # Normalize density (index 0)
-                normalized[start_idx] /= self.density_norm
+                # Normalize inflow (index 0)
+                normalized[start_idx] /= self.flow_norm
                 # Normalize flow (indices 1, 2)
                 normalized[start_idx + 1] /= self.flow_norm
+                # normalized[start_idx + 1]  = np.clip(normalized[start_idx]/100, 0, 1)
                 normalized[start_idx + 2] /= self.flow_norm
+                normalized[start_idx + 3] /= self.flow_norm
+                # normalize the gate width (index 4)
+                # normalized[start_idx + 4] /= 
+                # normalized[start_idx + 1]  = np.clip(normalized[start_idx]/100, 0, 1)
             elif self.obs_mode == "option4":
                 # Normalize density (index 0)
                 normalized[start_idx] /= self.density_norm
