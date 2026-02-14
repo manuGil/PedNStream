@@ -341,7 +341,7 @@ class PPOAgentHRL:
         self.critic_optimizer = torch.optim.Adam(self.value_net.parameters(), lr=critic_lr)
         self.device = device
 
-        # Param noise
+        # Param noise (adaptive, targets mean_head only)
         self.use_param_noise = use_param_noise
         self.param_noise_std_initial = param_noise_std
         self.param_noise_std = param_noise_std
