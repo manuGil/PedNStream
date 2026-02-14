@@ -711,8 +711,8 @@ class PPOAgentHRL:
         self.update_count += 1
         self._decay_entropy_coef()
         self._step_lr_scheduler()
-        if self.use_param_noise:
-            self._decay_param_noise_std()
+        # param_noise_std is adapted in update_batch before restoring params
+        # (no separate decay call needed here)
         if self.use_action_noise:
             self._decay_action_noise_std()
 
