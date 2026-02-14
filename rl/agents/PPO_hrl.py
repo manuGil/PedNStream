@@ -775,7 +775,8 @@ class PPOAgentHRL:
         self._param_noise_applied = True
 
     def _restore_actor_params(self):
-        if self._original_actor_params is not None:
+        """Restore original mean_head parameters (remove noise)."""
+        if self._original_mean_head_params is not None:
             with torch.no_grad():
                 for name, param in self.actor.mean_head.named_parameters():
                     if name in self._original_mean_head_params:
