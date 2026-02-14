@@ -116,6 +116,12 @@ class DurationAttentionPolicy(nn.Module):
 
         # ---- Action head (per-link, continuous) ----
         self.mean_head = nn.Linear(hidden_size, 1)
+        # self.mean_head = nn.Sequential(
+        #     nn.Linear(hidden_size, hidden_size // 2),
+        #     nn.LayerNorm(hidden_size // 2),
+        #     nn.ReLU(),
+        #     nn.Linear(hidden_size // 2, 1),
+        # )
         self.std_head = nn.Linear(hidden_size, 1)
 
         # ---- Duration head (global, discrete) ----
@@ -270,8 +276,8 @@ class PPOAgentHRL:
                  lstm_hidden_size=64, num_lstm_layers=1, num_heads=2,
                  use_param_noise=False, param_noise_std=0.1,
                  param_noise_std_min=0.01,
-                 use_action_noise=False, action_noise_std=0.1,
-                 action_noise_std_min=0.01, num_episodes=100, tm_window=50,
+                 use_action_noise=False, action_noise_std=0.01,
+                 action_noise_std_min=0.001, num_episodes=100, tm_window=50,
                  use_lr_decay=False, lr_warmup_frac=0.05, lr_min_ratio=0.01,
                  max_duration=5,
                  duration_entropy_coef=0.05):
@@ -326,7 +332,7 @@ class PPOAgentHRL:
             obs_dim, act_dim,
             hidden_size=lstm_hidden_size,
             num_layers=num_lstm_layers,
-            max_std=2.0,
+            max_std=1,
             max_duration=max_duration,
             num_heads=num_heads
         )
@@ -526,7 +532,9 @@ class PPOAgentHRL:
             return
 
         if self.use_param_noise and self._param_noise_applied:
-            self._restore_actor_params()
+            self._adapt_param_noise_std()
+            # NOTE: restore is deferred until after old log probs are computed
+            # so that π_old matches the noisy collection policy.
 
         num_trajectories = len(self.batch_buffer)
 
@@ -592,6 +600,10 @@ class PPOAgentHRL:
             g_mean, g_std = all_adv.mean(), all_adv.std() + 1e-8
             for d in trajectory_data:
                 d['advantage'] = (d['advantage'] - g_mean) / g_std
+
+        # Restore clean actor params now that old log probs are captured
+        if self.use_param_noise and self._param_noise_applied:
+            self._restore_actor_params()
 
         total_timesteps = sum(d['T'] for d in trajectory_data)
 
@@ -761,8 +773,9 @@ class PPOAgentHRL:
             }
         return {'actor_lr': self.actor_lr, 'critic_lr': self.critic_lr}
 
-    # Param noise helpers (same as PPO_tbptt)
+    # Param noise helpers — targets mean_head only, with adaptive std scaling
     def _apply_param_noise(self):
+        """Add Gaussian noise to mean_head parameters only for exploration."""
         if self._param_noise_applied:
             self._restore_actor_params()
         # Store only mean_head original params
@@ -1057,7 +1070,7 @@ def train_hrl_multi_agent_batch(env, agents, delta_actions=False, num_episodes=5
 
                     # --- Store macro-transitions ---
                     for agent_id, agent in agents.items():
-                        actual_k = min(durations[agent_id], k_step + 1) if done else durations[agent_id]
+                        # actual_k = min(durations[agent_id], k_step + 1) if done else durations[agent_id]
                         agent.store_transition(
                             state=start_obs[agent_id],
                             action=actions[agent_id],
