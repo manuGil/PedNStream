@@ -39,7 +39,8 @@ if __name__ == "__main__":
     """
     algo = "ppo"
     SEED = 100
-    NORM = False
+    NORM = False   # running mean-std normalization for observations
+    builder_norm_obs = False  # normalize observations in the environment builder
     STATE_OPTION = "option3"
     randomize = True
     norm_ret = True
