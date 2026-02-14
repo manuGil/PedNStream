@@ -765,8 +765,10 @@ class PPOAgentHRL:
     def _apply_param_noise(self):
         if self._param_noise_applied:
             self._restore_actor_params()
-        self._original_actor_params = {
-            name: param.data.clone() for name, param in self.actor.named_parameters()
+        # Store only mean_head original params
+        self._original_mean_head_params = {
+            name: param.data.clone()
+            for name, param in self.actor.mean_head.named_parameters()
         }
         with torch.no_grad():
             for name, param in self.actor.mean_head.named_parameters():
