@@ -784,10 +784,69 @@ class PPOAgentHRL:
             self._original_mean_head_params = None
         self._param_noise_applied = False
 
-    def _decay_param_noise_std(self):
-        progress = min(self.update_count / self.total_updates, 1.0)
-        self.param_noise_std = self.param_noise_std_initial + \
-            (self.param_noise_std_min - self.param_noise_std_initial) * progress
+    def _adapt_param_noise_std(self):
+        """Adaptively scale param_noise_std based on KL between perturbed and
+        unperturbed policies over the collected batch.
+
+        Must be called *before* _restore_actor_params() so that the current
+        actor still has noisy mean_head weights.
+        """
+        if not hasattr(self, 'batch_buffer') or len(self.batch_buffer) == 0:
+            return
+
+        with torch.no_grad():
+            # --- Get perturbed policy outputs (current noisy mean_head) ---
+            all_perturbed_mu = []
+            all_perturbed_std = []
+            all_states_seq = []
+            for traj in self.batch_buffer:
+                states = torch.tensor(traj['states'], dtype=torch.float).to(self.device)
+                states_seq = states.unsqueeze(0)  # (1, T, obs_dim)
+                mu_p, std_p, _, _ = self.actor(states_seq)
+                all_perturbed_mu.append(mu_p.squeeze(0))
+                all_perturbed_std.append(std_p.squeeze(0))
+                all_states_seq.append(states_seq)
+
+            # --- Temporarily restore clean params to get unperturbed outputs ---
+            self._restore_actor_params()
+
+            all_clean_mu = []
+            all_clean_std = []
+            for states_seq in all_states_seq:
+                mu_c, std_c, _, _ = self.actor(states_seq)
+                all_clean_mu.append(mu_c.squeeze(0))
+                all_clean_std.append(std_c.squeeze(0))
+
+            # --- Compute mean KL(clean || perturbed) ---
+            # KL between two diagonal Gaussians:
+            #   KL(p||q) = log(σ_q/σ_p) + (σ_p² + (μ_p - μ_q)²) / (2σ_q²) - 0.5
+            total_kl = 0.0
+            total_n = 0
+            for mu_c, std_c, mu_p, std_p in zip(
+                    all_clean_mu, all_clean_std, all_perturbed_mu, all_perturbed_std):
+                kl = (torch.log(std_p / std_c)
+                      + (std_c ** 2 + (mu_c - mu_p) ** 2) / (2.0 * std_p ** 2)
+                      - 0.5)
+                total_kl += kl.sum().item()
+                total_n += kl.numel()
+
+            mean_kl = total_kl / max(total_n, 1)
+
+            # --- Adaptive scaling ---
+            # Use kl_tolerance as the target KL for noise adaptation
+            if mean_kl > self.kl_tolerance:
+                # Too much perturbation → shrink noise
+                self.param_noise_std = max(
+                    self.param_noise_std / self.param_noise_adapt_coef,
+                    self.param_noise_std_min)
+            else:
+                # Room for more exploration → grow noise
+                self.param_noise_std *= self.param_noise_adapt_coef
+
+        # Re-apply noise (params were restored above for KL computation)
+        # Note: _param_noise_applied was set to False inside _restore_actor_params
+        # The caller (update_batch) will call _restore_actor_params again which is
+        # now a no-op, and training proceeds with clean params.
 
     def _decay_action_noise_std(self):
         progress = min(self.update_count / self.total_updates, 1.0)
