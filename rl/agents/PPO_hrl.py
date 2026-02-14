@@ -346,6 +346,7 @@ class PPOAgentHRL:
         self.param_noise_std_initial = param_noise_std
         self.param_noise_std = param_noise_std
         self.param_noise_std_min = param_noise_std_min
+        self.param_noise_adapt_coef = 1.01  # multiplicative factor for adaptive scaling
         self._param_noise_applied = False
         self._original_actor_params = None
 
