@@ -769,7 +769,7 @@ class PPOAgentHRL:
             name: param.data.clone() for name, param in self.actor.named_parameters()
         }
         with torch.no_grad():
-            for name, param in self.actor.named_parameters():
+            for name, param in self.actor.mean_head.named_parameters():
                 if param.requires_grad:
                     param.data.add_(torch.randn_like(param) * self.param_noise_std)
         self._param_noise_applied = True
