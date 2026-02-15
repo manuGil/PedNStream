@@ -19,3 +19,4 @@
 Tables.xlsx
 # wandb
 /rl/wandb
+/rl/checkpoints
