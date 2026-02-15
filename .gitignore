@@ -17,3 +17,6 @@
 /.cursorindexingignore
 .vscode
 Tables.xlsx
+
+#Sphinx build files
+docs/_build

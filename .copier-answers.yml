@@ -1,0 +1,20 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+_commit: v3.0.0
+_src_path: https://github.com/manuGil/fair-code.git
+authors: Weiming Mai
+citation: true
+code_of_conduct: true
+community: false
+contact_email: w.m.mai@tudelft.nl
+copyright_holder: Weiming Mai
+copyright_year: 2026
+oss_waiver: true
+owner: Weiming Mai
+software_license: MIT License
+software_name: PedNStream
+software_purpose: PedNStream is a light-weight/Python-native pedestrian traffic simulation
+    tool based on the Link Transmission Model (LTM). It enables modeling and simulation
+    of pedestrian movements through complex networks, providing insights into crowd
+    dynamics and flow behaviors.
+waiver_dean: 'Stefan Aarninkhof '
+waiver_faculty: Civil Engineering and Geosciences

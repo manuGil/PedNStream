@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pednstream"
+dynamic = ["version"]
+dependencies = [
+    "numpy>=1.21.0",
+    "scipy>=1.7.0",
+    "matplotlib>=3.4.0",
+    "networkx>=2.6.0",
+    "pettingzoo>=1.24.0",
+    "gymnasium>=0.29.0",
+    "torch>=2.0.0",
+    "stable-baselines3>=2.0.0",
+    "tensorboard>=2.14.0",
+    "ray[rllib]>=2.9.0",
+    "torch-geometric>=2.3.0"
+]
+
+requires-python = ">=3.11"
+authors = [
+  { name = "John Doe", email = "id@tudelft.nl" },
+  # Add more authors as needed
+]
+maintainers = [
+  { name = "John Doe", email = "user@tudelft.nl" },
+]
+description = "PedNStream is a light-weight/Python-native pedestrian traffic simulation tool based on the Link Transmission Model (LTM)"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICEN[CS]E.*"]
+keywords = ["pedestrian traffic", "simulation"]
+classifiers = [
+  "Development Status :: 1 - Planning",
+  "Programming Language :: Python",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "ruff",
+  "sphinx",
+  "myst-parser",
+  "sphinx-rtd-theme",
+]
+video = [
+"selenium>=4.0.0",
+"opencv-python>=4.5.0",
+"webdriver-manager>=3.8.0",
+"imageio>=2.9.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/WaimenMak/PedNStream"
+Documentation = ""
+Repository = "https://github.com/WaimenMak/PedNStream"
+"Bug Tracker" = "https://github.com/WaimenMak/PedNStream/issues"
+Changelog = "https://github.com/WaimenMak/PedNStream/main/CHANGELOG.md"
+
+
+[tool.hatch.version]
+path = "src/pednstream/__version__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pednstream"]
+
+[tool.pytest.ini_options]
+pythonpath = "src"
+addopts = ["--import-mode=importlib"]
