@@ -1,5 +1,5 @@
 import numpy as np
-from src.utils.functions import BiDirectionalFd, UniSpeedDensityFd, cal_free_flow_speed, cal_link_flow_fd, cal_link_flow_kv
+from pednstream.utils.functions import BiDirectionalFd, UniSpeedDensityFd, cal_free_flow_speed, cal_link_flow_fd, cal_link_flow_kv
 
 class BaseLink:
     """Base class for all link types"""
