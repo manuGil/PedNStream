@@ -311,7 +311,7 @@ def validate_agents(env, agents, delta_actions: bool = False, num_episodes: int 
     Args:
         env: PettingZoo ParallelEnv (can be wrapped with RunningNormalizeWrapper)
         agents: Dict mapping agent_id -> PPOAgent or SACAgent
-        delta_actions: If True, agents output delta actions
+        delta_actions: Global flag for delta actions (overridden by agent attributes if present)
         num_episodes: Number of validation episodes to run (default: 3)
         randomize: If True, randomize environment at reset
     
@@ -475,8 +475,14 @@ def validate_agents(env, agents, delta_actions: bool = False, num_episodes: int 
                 agent.value_net.train()
     
     # Compute averages
-    avg_return = np.mean(all_episode_returns)
-    agent_avg_returns = {aid: total / num_episodes for aid, total in agent_total_returns.items()}
+    if not all_episode_returns:
+        avg_return = 0.0
+        agent_avg_returns = {aid: 0.0 for aid in agents.keys()}
+    else:
+        avg_return = np.mean(all_episode_returns)
+        # Avoid division by zero if num_episodes mismatch
+        count = max(len(all_episode_returns), 1)
+        agent_avg_returns = {aid: total / count for aid, total in agent_total_returns.items()}
     
     return {
         'avg_return': avg_return,
@@ -518,8 +524,11 @@ def validate_and_save_best(env, agents, save_dir: str, delta_actions: bool = Fal
     """
     Run validation episodes and save agents if new best return is achieved.
     
+    Creates a fresh environment for validation to ensure clean isolation from
+    training state (no state leakage, frozen normalization statistics).
+    
     Args:
-        env: PettingZoo ParallelEnv
+        env: PettingZoo ParallelEnv (used to extract configuration for fresh env)
         agents: Dict mapping agent_id -> PPOAgent or SACAgent
         save_dir: Directory to save agent checkpoints
         delta_actions: If True, agents output delta actions
@@ -532,43 +541,79 @@ def validate_and_save_best(env, agents, save_dir: str, delta_actions: bool = Fal
     Returns:
         float: Updated best average return
     """
-    # Run validation
-    val_result = validate_agents(env, agents, delta_actions=delta_actions,
-                                 num_episodes=num_val_episodes, randomize=randomize)
+    # Import here to avoid circular imports
+    from rl.pz_pednet_env import PedNetParallelEnv
     
-    avg_val_return = val_result['avg_return']
+    # Create fresh validation environment
+    # Extract configuration from training env (handles both wrapped and unwrapped envs)
+    base_env = env.env if hasattr(env, 'env') else env  # Unwrap if using RunningNormalizeWrapper
     
-    # Log validation metrics to wandb
-    if use_wandb:
-        try:
-            import wandb
-            if wandb.run is not None:
-                log_dict = {
-                    'val_episode': global_episode,
-                    'val_avg_return': avg_val_return,
-                    'val_return_std': np.std(val_result['episode_returns']),
-                }
-                for agent_id, agent_return in val_result['agent_returns'].items():
-                    log_dict[f'val_agent_{agent_id}_return'] = agent_return
-                wandb.log(log_dict)
-        except ImportError:
-            pass
+    val_base_env = PedNetParallelEnv(
+        dataset=base_env.dataset,
+        normalize_obs=base_env.normalize_obs,
+        obs_mode=base_env.obs_mode,
+        render_mode=None,  # No rendering during validation
+        verbose=False,
+        action_gap=base_env._action_gap,
+    )
     
-    # Save if new best
-    if avg_val_return > best_avg_return:
-        best_avg_return = avg_val_return
+    # Wrap with normalization if training env uses it, but in non-training mode
+    if hasattr(env, 'norm_obs') or hasattr(env, 'norm_reward'):
+        val_env = RunningNormalizeWrapper(
+            val_base_env,
+            norm_obs=getattr(env, 'norm_obs', False),
+            norm_reward=False,  # Don't normalize rewards during validation
+            training=False  # Freeze statistics
+        )
+        # Copy normalization statistics from training env
+        if hasattr(env, 'get_normalization_stats'):
+            val_env.set_normalization_stats(env.get_normalization_stats())
+    else:
+        val_env = val_base_env
+    
+    try:
+        # Run validation on fresh env
+        val_result = validate_agents(val_env, agents, delta_actions=delta_actions,
+                                     num_episodes=num_val_episodes, randomize=randomize)
         
-        metadata = {
-            'episode': int(global_episode),
-            'val_avg_return': float(avg_val_return),
-            # Ensure all values are native Python floats for JSON serialization
-            'val_episode_returns': [float(r) for r in val_result['episode_returns']],
-            'val_agent_returns': {aid: float(r) for aid, r in val_result['agent_returns'].items()},
-            'num_val_episodes': int(num_val_episodes)
-        }
-        save_all_agents(agents, save_dir, metadata=metadata)
-        print(f"[Validation] New best avg return: {best_avg_return:.3f} at episode {global_episode} "
-              f"(over {num_val_episodes} val episodes, saved to {save_dir})")
+        avg_val_return = val_result['avg_return']
+        
+        # Log validation metrics to wandb
+        if use_wandb:
+            try:
+                import wandb
+                if wandb.run is not None:
+                    log_dict = {
+                        'val_episode': global_episode,
+                        'val_avg_return': avg_val_return,
+                        'val_return_std': np.std(val_result['episode_returns']),
+                    }
+                    for agent_id, agent_return in val_result['agent_returns'].items():
+                        log_dict[f'val_agent_{agent_id}_return'] = agent_return
+                    wandb.log(log_dict)
+            except ImportError:
+                pass
+        
+        # Save if new best
+        if avg_val_return > best_avg_return:
+            best_avg_return = avg_val_return
+            
+            metadata = {
+                'episode': int(global_episode),
+                'val_avg_return': float(avg_val_return),
+                # Ensure all values are native Python floats for JSON serialization
+                'val_episode_returns': [float(r) for r in val_result['episode_returns']],
+                'val_agent_returns': {aid: float(r) for aid, r in val_result['agent_returns'].items()},
+                'num_val_episodes': int(num_val_episodes)
+            }
+            save_all_agents(agents, save_dir, metadata=metadata)
+            print(f"[Validation] New best avg return: {best_avg_return:.3f} at episode {global_episode} "
+                  f"(over {num_val_episodes} val episodes, saved to {save_dir})")
+    
+    finally:
+        # Clean up validation environment
+        if hasattr(val_env, 'close'):
+            val_env.close()
     
     return best_avg_return
 
@@ -577,10 +622,10 @@ def save_all_agents(agents: dict, save_dir: str, metadata: dict = None,
                     normalization_stats: dict = None):
     """
     Save all agents' parameters to a directory.
-    Supports both PPO (value network) and SAC (Q network) agents.
+    Automatically detects and supports multiple agent types (PPO variants, SAC, HRL, etc.)
     
     Args:
-        agents: Dict mapping agent_id -> PPOAgent or SACAgent
+        agents: Dict mapping agent_id -> Agent (any agent with get_config method)
         save_dir: Directory to save models
         metadata: Optional dict with training info (episodes, dataset, etc.)
         normalization_stats: Optional normalization statistics from wrapper
@@ -597,25 +642,33 @@ def save_all_agents(agents: dict, save_dir: str, metadata: dict = None,
     checkpoint = {}
     configs = {}
     for agent_id, agent in agents.items():
-        # Detect agent type: PPO has value_net, SAC has critic_1
-        if hasattr(agent, 'value_net'):
-            # PPO agent
+        # Get agent class name to identify the algorithm
+        agent_class_name = agent.__class__.__name__
+        
+        # Determine agent type and save accordingly
+        if hasattr(agent, 'value_net') and hasattr(agent, 'actor'):
+            # PPO-style agents (PPOAgent, PPOAgent_dyna, POMEAgent, PPOAgentHRL, etc.)
             checkpoint[agent_id] = {
-                'agent_type': 'PPO',
+                'agent_type': agent_class_name,  # Store specific class name
                 'actor_state_dict': agent.actor.state_dict(),
                 'critic_state_dict': agent.value_net.state_dict(),
                 'actor_optimizer_state_dict': agent.actor_optimizer.state_dict(),
                 'critic_optimizer_state_dict': agent.critic_optimizer.state_dict(),
             }
-            # Store additional PPO-specific state if available
+            # Store additional state if available
             if hasattr(agent, 'update_count'):
                 checkpoint[agent_id]['update_count'] = agent.update_count
             if hasattr(agent, 'entropy_coef'):
                 checkpoint[agent_id]['current_entropy_coef'] = agent.entropy_coef
-        elif hasattr(agent, 'critic_1'):
-            # SAC agent
+            # Store model-specific state for POME/Dyna agents
+            if hasattr(agent, 'dynamic_model'):
+                checkpoint[agent_id]['dynamic_model_state_dict'] = agent.dynamic_model.state_dict()
+                checkpoint[agent_id]['model_optimizer_state_dict'] = agent.model_optimizer.state_dict()
+                
+        elif hasattr(agent, 'critic_1') and hasattr(agent, 'actor'):
+            # SAC-style agents
             checkpoint[agent_id] = {
-                'agent_type': 'SAC',
+                'agent_type': agent_class_name,
                 'actor_state_dict': agent.actor.state_dict(),
                 'critic_1_state_dict': agent.critic_1.state_dict(),
                 'critic_2_state_dict': agent.critic_2.state_dict(),
@@ -628,7 +681,7 @@ def save_all_agents(agents: dict, save_dir: str, metadata: dict = None,
                 'log_alpha': agent.log_alpha.item(),
             }
         else:
-            raise ValueError(f"Unknown agent type for agent {agent_id}. Expected PPO (value_net) or SAC (critic_1)")
+            raise ValueError(f"Unknown agent type for agent {agent_id}. Agent class: {agent_class_name}")
         
         configs[agent_id] = agent.get_config()
     
@@ -678,15 +731,15 @@ def save_all_agents(agents: dict, save_dir: str, metadata: dict = None,
 def load_all_agents(save_dir: str, device: str = "cpu", agent_class=None):
     """
     Load all agents from a saved directory.
-    Automatically detects agent type (PPO or SAC) from saved checkpoint.
+    Automatically detects and loads different agent types (PPO variants, SAC, HRL, etc.)
     
     Args:
         save_dir: Directory containing saved models
         device: Device to load models to
-        agent_class: Optional agent class (auto-detected if not provided)
+        agent_class: Optional agent class to use (auto-detected if not provided)
     
     Returns:
-        agents: Dict mapping agent_id -> PPOAgent or SACAgent
+        agents: Dict mapping agent_id -> Agent instance
         config_data: Full config including metadata and normalization stats
     """
     save_path = Path(save_dir)
@@ -698,137 +751,130 @@ def load_all_agents(save_dir: str, device: str = "cpu", agent_class=None):
     # Load checkpoint
     checkpoint = torch.load(save_path / 'checkpoint.pt', map_location=device)
     
+    # Agent class mapping - dynamically import when needed
+    AGENT_CLASS_MAP = {
+        'PPOAgent': 'rl.agents.PPO_tbptt',
+        'PPOAgent_dyna': 'rl.agents.PPO_dyna',
+        'POMEAgent': 'rl.agents.POME',
+        'PPOAgentHRL': 'rl.agents.PPO_hrl',
+        'SACAgent': 'rl.agents.SAC_copy',
+    }
+    
     # Recreate agents
     agents = {}
     for agent_id, config in config_data['agent_configs'].items():
-        # Detect agent type from checkpoint
+        # Get agent type from checkpoint
         agent_type = checkpoint[agent_id].get('agent_type', None)
         
-        # If agent_type not in checkpoint, try to infer from config keys
+        # Backward compatibility: infer from config if agent_type not in checkpoint
         if agent_type is None:
             if 'lmbda' in config or 'epochs' in config or 'clip_eps' in config:
-                agent_type = 'PPO'
+                agent_type = 'PPOAgent'
             elif 'stack_size' in config or 'tau' in config or 'target_entropy' in config:
-                agent_type = 'SAC'
+                agent_type = 'SACAgent'
             else:
                 raise ValueError(f"Cannot determine agent type for {agent_id}")
         
-        if agent_type == 'PPO':
-            # Import PPOAgent
-            if agent_class is None or agent_class.__name__ != 'PPOAgent':
-                from rl.agents.PPO_backup import PPOAgent
+        # Determine which agent class to use
+        if agent_class is not None:
+            # User specified a custom agent class
+            agent_class_to_use = agent_class
+        elif agent_type in AGENT_CLASS_MAP:
+            # Import the appropriate agent class dynamically
+            module_path = AGENT_CLASS_MAP[agent_type]
+            module = __import__(module_path, fromlist=[agent_type])
+            agent_class_to_use = getattr(module, agent_type)
+        else:
+            # Fallback: try to import from known modules
+            print(f"Warning: Unknown agent type '{agent_type}' for {agent_id}, trying to import...")
+            try:
+                # Try PPO variants first
+                from rl.agents.PPO_tbptt import PPOAgent
                 agent_class_to_use = PPOAgent
-            else:
-                agent_class_to_use = agent_class
+            except:
+                raise ValueError(f"Cannot load agent type: {agent_type}")
+        
+        # Create agent instance based on config
+        if agent_type in ['PPOAgent', 'PPOAgent_dyna', 'POMEAgent', 'PPOAgentHRL']:
+            # PPO-style agents: create using config parameters
+            # Build kwargs from config, filtering out None values
+            agent_kwargs = {
+                'obs_dim': config['obs_dim'],
+                'act_dim': config['act_dim'],
+                'act_low': config['act_low'],
+                'act_high': config['act_high'],
+                'gamma': config['gamma'],
+                'lmbda': config['lmbda'],
+                'epochs': config['epochs'],
+                'clip_eps': config['clip_eps'],
+                'entropy_coef': config['entropy_coef'],
+                'device': device,
+            }
             
-            # Create PPO agent with saved config
-            use_stacked_obs = config.get('use_stacked_obs', False)
-            use_gat_lstm = config.get('use_gat_lstm', False)
+            # Add optional parameters if they exist in config
+            optional_params = [
+                'actor_lr', 'critic_lr', 'entropy_coef_decay', 'entropy_coef_min',
+                'kl_tolerance', 'use_delta_actions', 'max_delta',
+                'lstm_hidden_size', 'num_lstm_layers', 'use_param_noise',
+                'use_action_noise', 'num_episodes', 'tm_window',
+                'use_stacked_obs', 'stack_size', 'hidden_size', 'kernel_size',
+                'use_gat_lstm', 'gat_hidden_size', 'gat_num_heads',
+                'use_lr_decay', 'lr_warmup_frac', 'lr_min_ratio',
+                'max_duration', 'duration_entropy_coef',  # HRL-specific
+                'model_lr', 'norm_reward',  # POME/Dyna-specific
+            ]
             
-            if use_gat_lstm:
-                agent = agent_class_to_use(
-                    obs_dim=config['obs_dim'],
-                    act_dim=config['act_dim'],
-                    act_low=config['act_low'],
-                    act_high=config['act_high'],
-                    gamma=config['gamma'],
-                    lmbda=config['lmbda'],
-                    epochs=config['epochs'],
-                    clip_eps=config['clip_eps'],
-                    entropy_coef=config['entropy_coef'],
-                    entropy_coef_decay=config.get('entropy_coef_decay', 0.995),
-                    entropy_coef_min=config.get('entropy_coef_min', 0.0001),
-                    use_delta_actions=config['use_delta_actions'],
-                    max_delta=config['max_delta'],
-                    use_gat_lstm=True,
-                    lstm_hidden_size=config['lstm_hidden_size'],
-                    gat_hidden_size=config['gat_hidden_size'],
-                    gat_num_heads=config['gat_num_heads'],
-                    num_lstm_layers=config.get('num_lstm_layers', 1),
-                    device=device,
-                )
-            elif use_stacked_obs:
-                agent = agent_class_to_use(
-                    obs_dim=config['obs_dim'],
-                    act_dim=config['act_dim'],
-                    act_low=config['act_low'],
-                    act_high=config['act_high'],
-                    gamma=config['gamma'],
-                    lmbda=config['lmbda'],
-                    epochs=config['epochs'],
-                    clip_eps=config['clip_eps'],
-                    entropy_coef=config['entropy_coef'],
-                    entropy_coef_decay=config.get('entropy_coef_decay', 0.995),
-                    entropy_coef_min=config.get('entropy_coef_min', 0.0001),
-                    use_delta_actions=config['use_delta_actions'],
-                    max_delta=config['max_delta'],
-                    use_stacked_obs=True,
-                    stack_size=config['stack_size'],
-                    hidden_size=config['hidden_size'],
-                    kernel_size=config['kernel_size'],
-                    device=device,
-                )
-            else:
-                agent = agent_class_to_use(
-                    obs_dim=config['obs_dim'],
-                    act_dim=config['act_dim'],
-                    act_low=config['act_low'],
-                    act_high=config['act_high'],
-                    gamma=config['gamma'],
-                    lmbda=config['lmbda'],
-                    epochs=config['epochs'],
-                    clip_eps=config['clip_eps'],
-                    entropy_coef=config['entropy_coef'],
-                    entropy_coef_decay=config.get('entropy_coef_decay', 0.995),
-                    entropy_coef_min=config.get('entropy_coef_min', 0.0001),
-                    use_delta_actions=config['use_delta_actions'],
-                    max_delta=config['max_delta'],
-                    lstm_hidden_size=config['lstm_hidden_size'],
-                    num_lstm_layers=config.get('num_lstm_layers', 1),
-                    device=device,
-                )
+            for param in optional_params:
+                if param in config:
+                    agent_kwargs[param] = config[param]
             
-            # Load state dicts
+            # Create agent
+            agent = agent_class_to_use(**agent_kwargs)
+            
+            # Load state dicts for PPO-style agents
             agent.actor.load_state_dict(checkpoint[agent_id]['actor_state_dict'])
             agent.value_net.load_state_dict(checkpoint[agent_id]['critic_state_dict'])
             agent.actor_optimizer.load_state_dict(checkpoint[agent_id]['actor_optimizer_state_dict'])
             agent.critic_optimizer.load_state_dict(checkpoint[agent_id]['critic_optimizer_state_dict'])
             
-            # Restore additional PPO-specific state if available
+            # Restore additional state
             if 'update_count' in checkpoint[agent_id]:
                 agent.update_count = checkpoint[agent_id]['update_count']
             if 'current_entropy_coef' in checkpoint[agent_id]:
                 agent.entropy_coef = checkpoint[agent_id]['current_entropy_coef']
+            
+            # Load model-specific components for POME/Dyna agents
+            if 'dynamic_model_state_dict' in checkpoint[agent_id] and hasattr(agent, 'dynamic_model'):
+                agent.dynamic_model.load_state_dict(checkpoint[agent_id]['dynamic_model_state_dict'])
+                agent.model_optimizer.load_state_dict(checkpoint[agent_id]['model_optimizer_state_dict'])
         
-        elif agent_type == 'SAC':
-            # Import SACAgent
-            if agent_class is None or agent_class.__name__ != 'SACAgent':
-                from rl.agents.SAC_copy import SACAgent
-                agent_class_to_use = SACAgent
-            else:
-                agent_class_to_use = agent_class
+        elif agent_type == 'SACAgent':
+            # SAC-style agents: create using config parameters
+            agent_kwargs = {
+                'obs_dim': config['obs_dim'],
+                'act_dim': config['act_dim'],
+                'act_low': config['act_low'],
+                'act_high': config['act_high'],
+                'device': device,
+            }
             
-            # Create SAC agent with saved config
-            agent = agent_class_to_use(
-                obs_dim=config['obs_dim'],
-                act_dim=config['act_dim'],
-                act_low=config['act_low'],
-                act_high=config['act_high'],
-                stack_size=config['stack_size'],
-                hidden_size=config['hidden_size'],
-                kernel_size=config['kernel_size'],
-                actor_lr=config['actor_lr'],
-                critic_lr=config['critic_lr'],
-                alpha_lr=config['alpha_lr'],
-                target_entropy=config['target_entropy'],
-                tau=config['tau'],
-                gamma=config['gamma'],
-                buffer_size=config.get('buffer_size', 50000),  # Default for backward compatibility
-                max_delta=config['max_delta'],
-                device=device,
-            )
+            # Add SAC-specific parameters
+            sac_params = [
+                'stack_size', 'hidden_size', 'kernel_size', 'actor_lr',
+                'critic_lr', 'alpha_lr', 'target_entropy', 'tau',
+                'gamma', 'buffer_size', 'max_delta',
+            ]
             
-            # Load state dicts
+            for param in sac_params:
+                if param in config:
+                    agent_kwargs[param] = config[param]
+                elif param == 'buffer_size':
+                    agent_kwargs[param] = 50000  # Default for backward compatibility
+            
+            # Create agent
+            agent = agent_class_to_use(**agent_kwargs)
+            
+            # Load state dicts for SAC
             agent.actor.load_state_dict(checkpoint[agent_id]['actor_state_dict'])
             agent.critic_1.load_state_dict(checkpoint[agent_id]['critic_1_state_dict'])
             agent.critic_2.load_state_dict(checkpoint[agent_id]['critic_2_state_dict'])
@@ -1622,6 +1668,11 @@ def _evaluate_single_run(env, agents, delta_actions: bool, deterministic: bool, 
     # Note: seed is not passed to reset() - it should be set at env construction time
     reset_options = {'randomize': randomize} if randomize else None
     obs, infos = env.reset(options=reset_options)
+
+    # Reset stateful agents (e.g., PPO LSTM hidden states)
+    for agent in agents.values():
+        if hasattr(agent, 'reset_buffer'):
+            agent.reset_buffer()
     
     # Initialize state history queues for stacked observations (for agents that need them)
     state_history_queue = {}
@@ -1748,6 +1799,24 @@ def evaluate_agents(env, agents, delta_actions: bool = False, deterministic: boo
     # Set wrapper to evaluation mode if applicable
     if hasattr(env, 'set_training'):
         env.set_training(False)
+    
+    # Set networks to eval mode (affects LayerNorm, Dropout, etc.)
+    # Also disable parameter noise
+    param_noise_states = {}
+    for aid, agent in agents.items():
+        if hasattr(agent, 'use_param_noise'):
+            param_noise_states[aid] = agent.use_param_noise
+            agent.use_param_noise = False
+            # Ensure we are using clean weights (no noise)
+            if hasattr(agent, '_param_noise_applied') and agent._param_noise_applied:
+                if hasattr(agent, '_restore_actor_params'):
+                    agent._restore_actor_params()
+
+    for agent in agents.values():
+        if hasattr(agent, 'actor'):
+            agent.actor.eval()
+        if hasattr(agent, 'value_net'):
+            agent.value_net.eval()
     
     if verbose and num_runs > 1:
         print(f"Running {num_runs} evaluation runs...")

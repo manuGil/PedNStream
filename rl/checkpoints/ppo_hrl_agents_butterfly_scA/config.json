@@ -1,0 +1,66 @@
+{
+  "agent_configs": {
+    "gate_2": {
+      "obs_dim": 25,
+      "act_dim": 5,
+      "act_low": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "act_high": [
+        6.0,
+        5.0,
+        0.009999999776482582,
+        5.0,
+        0.009999999776482582
+      ],
+      "gamma": 0.99,
+      "lmbda": 0.96,
+      "epochs": 10,
+      "clip_eps": 0.2,
+      "entropy_coef": 0.04,
+      "entropy_coef_decay": 0.995,
+      "entropy_coef_min": 0.001,
+      "use_delta_actions": true,
+      "max_delta": 2.5,
+      "use_param_noise": false,
+      "param_noise_std": 0.1,
+      "param_noise_std_min": 0.01,
+      "use_action_noise": false,
+      "action_noise_std": 0.01,
+      "action_noise_std_min": 0.001,
+      "total_updates": 80,
+      "use_lr_decay": false,
+      "lr_warmup_frac": 0.05,
+      "lr_min_ratio": 0.01,
+      "lstm_hidden_size": 64,
+      "num_lstm_layers": 1,
+      "max_duration": 7,
+      "duration_entropy_coef": 0.05
+    }
+  },
+  "metadata": {
+    "episode": 200,
+    "val_avg_return": -82.7372055053711,
+    "val_episode_returns": [
+      -110.24356079101562,
+      224.5276336669922,
+      -163.52207946777344,
+      99.38824462890625,
+      -316.2048645019531,
+      -16.61157989501953,
+      -277.5917053222656,
+      -5.497076034545898,
+      -67.44891357421875,
+      -194.16812133789062
+    ],
+    "val_agent_returns": {
+      "gate_2": -82.7372055053711
+    },
+    "num_val_episodes": 10
+  },
+  "saved_at": "2026-02-15T13:43:20.891779"
+}

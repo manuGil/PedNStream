@@ -22,7 +22,7 @@ from rl.rl_utils import (
     load_all_agents,
 )
 from rl.agents.PPO_backup import PPOAgent
-from rl.agents.PPO_dyna import PPOAgent as PPOAgent_dyna
+from rl.agents.PPO_tbptt import PPOAgent as PPOAgent_dyna
 from rl.agents.POME import POMEAgent
 
 

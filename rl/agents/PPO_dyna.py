@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # @Time    : 02/02/2026 11:00
 # @Author  : mmai
-# @FileName: PPO_tbtt.py
+# @FileName: PPO_dyna.py
 # @Software: PyCharm
 
 import torch
@@ -142,7 +142,7 @@ class SimpleDynamicModel(nn.Module):
         return reward, next_state, hidden_out
 
 
-class PPOAgent:
+class PPOAgent_dyna:
     """PPO implementation for continuous action spaces with stateful LSTM policy."""
 
     def __init__(self, obs_dim, act_dim, act_low, act_high, actor_lr=3e-4, critic_lr=6e-4,

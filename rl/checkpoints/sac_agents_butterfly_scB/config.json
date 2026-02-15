@@ -1,0 +1,48 @@
+{
+  "agent_configs": {
+    "gate_2": {
+      "obs_dim": 25,
+      "act_dim": 5,
+      "act_low": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "act_high": [
+        6.0,
+        2.0,
+        2.0,
+        2.0,
+        3.0
+      ],
+      "stack_size": 3,
+      "hidden_size": 64,
+      "kernel_size": 4,
+      "actor_lr": 1e-05,
+      "critic_lr": 0.0003,
+      "alpha_lr": 0.0003,
+      "target_entropy": -5,
+      "tau": 0.005,
+      "gamma": 0.99,
+      "buffer_size": 100000,
+      "max_delta": 2.5,
+      "log_alpha": -17.090763092041016
+    }
+  },
+  "metadata": {
+    "episode": 90,
+    "val_avg_return": -1712.4293212890625,
+    "val_episode_returns": [
+      170.94227600097656,
+      -2890.48193359375,
+      -2417.74853515625
+    ],
+    "val_agent_returns": {
+      "gate_2": -1712.4293212890625
+    },
+    "num_val_episodes": 3
+  },
+  "saved_at": "2026-02-01T14:48:43.058808"
+}

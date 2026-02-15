@@ -1056,7 +1056,10 @@ def train_hrl_multi_agent_batch(env, agents, delta_actions=False, num_episodes=5
                         next_obs, rewards, terms, truncs, infos = env.step(absolute_actions)
 
                         for aid in agents.keys():
-                            cumul_rewards[aid] += rewards[aid]
+                            # cumul_rewards[aid] += rewards[aid]
+                            # multi step discount reward
+                            gamma = agents[aid].gamma
+                            cumul_rewards[aid] += rewards[aid] * (gamma ** k_step)
                             if aid in infos and 'true_reward' in infos[aid]:
                                 cumul_true_rewards[aid] += infos[aid]['true_reward']
                             else:

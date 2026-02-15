@@ -277,7 +277,7 @@ class NetworkEnvGenerator:
             }
         
         # Optionally shuffle demand profiles across origins for extra diversity
-        demand_params = self._shuffle_demand_among_origins(demand_params)
+        demand_params = self._shuffle_demand_among_origins(demand_params, shuffle_prob=0.5)
             
         return demand_params
 

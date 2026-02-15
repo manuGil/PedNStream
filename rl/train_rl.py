@@ -29,6 +29,10 @@ from rl.rl_utils import (
 )
 from rl.agents.PPO_backup import PPOAgent, train_on_policy_multi_agent
 from rl.agents.SAC_copy import SACAgent, train_off_policy_multi_agent
+from rl.agents.PPO_tbptt import PPOAgent as PPOAgent_tbptt, train_on_policy_multi_agent_batch
+from rl.agents.PPO_dyna import PPOAgent_dyna
+from rl.agents.POME import POMEAgent
+from rl.agents.PPO_hrl import PPOAgentHRL, train_hrl_multi_agent_batch
 from rl.agents.rule_based import RuleBasedGaterAgent
 from rl.agents.optimization_based import DecentralizedOptimizationAgent
 
@@ -37,8 +41,8 @@ if __name__ == "__main__":
         option2: density on outgoing links and gate widths
         option3:inoutflow of the node and other side, gate widths
     """
-    algo = "ppo"
-    SEED = 100
+    algo = "ppo_hrl"  # "ppo", "ppo_dyna", "ppo_tbptt", "pome", "sac"
+    SEED = 77
     NORM = False   # running mean-std normalization for observations
     builder_norm_obs = False  # normalize observations in the environment builder
     STATE_OPTION = "option3"
@@ -64,7 +68,7 @@ if __name__ == "__main__":
 
     # Create environment with normalization wrapper
     base_env = PedNetParallelEnv(
-        dataset=dataset, normalize_obs=False, obs_mode=STATE_OPTION, render_mode="animate", action_gap=action_gap
+        dataset=dataset, normalize_obs=builder_norm_obs, obs_mode=STATE_OPTION, render_mode="animate", action_gap=action_gap
     )
     env = RunningNormalizeWrapper(base_env, norm_obs=NORM, norm_reward=norm_ret)
     env.seed(SEED)
@@ -94,16 +98,15 @@ if __name__ == "__main__":
             kernel_size=4,
             use_param_noise=False,
             use_action_noise=False,
-            total_updates=80,
+            total_updates=100*0.8,
             param_noise_std_min=0
         ) for agent_id in env.possible_agents}
 
-        # agents, config_data = load_all_agents(save_dir=f"best_ppo_agents_butterfly", device="cpu")
         # Train PPO agents
         return_dict, _ = train_on_policy_multi_agent(
-            env, agents, num_episodes=200, delta_actions=True,
+            env, agents, num_episodes=100, delta_actions=True,
             randomize=randomize,
-            agents_saved_dir=f"ppo_agents_{dataset}",
+            agents_saved_dir=f"./checkpoints/ppo_agents_{dataset}",
             num_val_episodes=5,
             val_freq=10,
             use_wandb=True
@@ -121,6 +124,7 @@ if __name__ == "__main__":
             lmbda=0.96,
             entropy_coef=0.01,
             kl_tolerance=0.01,
+            entropy_coef_min=0,
             use_delta_actions=True,
             max_delta=2.5,
             lstm_hidden_size=64,
@@ -136,6 +140,7 @@ if __name__ == "__main__":
 
         ) for agent_id in env.possible_agents}
 
+        # agents, config_data = load_all_agents(save_dir=f"./checkpoints/{algo}_agents_butterfly_scA", device="cpu")
         return_dict, _ = train_on_policy_multi_agent(
             env, agents, num_episodes=200, delta_actions=True,
             randomize=randomize, agents_saved_dir=f"./checkpoints/ppo_dyna_agents_{dataset}",
@@ -176,7 +181,7 @@ if __name__ == "__main__":
         # )
         # env.set_training(True)
         return_dict, _ = train_on_policy_multi_agent_batch(
-            env, agents, num_episodes=200, num_trajectories_per_update=1, delta_actions=True,
+            env, agents, num_episodes=200, num_trajectories_per_update=2, delta_actions=True,
             randomize=randomize, agents_saved_dir=f"./checkpoints/ppo_tbptt_agents_{dataset}",
             num_val_episodes=10, val_freq=10, use_wandb=True,
             debug_save_dir=f"rl_training/{dataset}/ppo_tbptt_debug",
@@ -202,16 +207,16 @@ if __name__ == "__main__":
             num_heads=2,
             use_param_noise=False,
             use_action_noise=False,
-            num_episodes=400,
+            num_episodes=200,
             tm_window=50,
             max_duration=7,
             duration_entropy_coef=0.05,
         ) for agent_id in env.possible_agents}
         # agents, config_data = load_all_agents(save_dir=f"./checkpoints/{algo}_agents_butterfly_scB", device="cpu")
         return_dict, _ = train_hrl_multi_agent_batch(
-            env, agents, num_episodes=400, num_trajectories_per_update=4, delta_actions=True,
+            env, agents, num_episodes=200, num_trajectories_per_update=2, delta_actions=True,
             randomize=randomize, agents_saved_dir=f"./checkpoints/ppo_hrl_agents_{dataset}",
-            num_val_episodes=5, val_freq=10, use_wandb=True,
+            num_val_episodes=10, val_freq=10, use_wandb=True,
             debug_save_dir=f"rl_training/{dataset}/ppo_hrl_debug",
             debug_save_episodes=[5, 50, 100, 150, 200]
         )
@@ -233,15 +238,16 @@ if __name__ == "__main__":
             num_lstm_layers=1,
             use_param_noise=False,
             use_action_noise=False,
-            num_episodes=200,
+            num_episodes=100,
             tm_window=50,
             model_lr=5e-4,
             # alpha=0.1,
             # alpha_min=0.0,
             norm_reward=True,
         ) for agent_id in env.possible_agents}
+        # agents, config_data = load_all_agents(save_dir=f"./checkpoints/{algo}_agents_butterfly_scA", device="cpu")
         return_dict, _ = train_on_policy_multi_agent(
-            env, agents, num_episodes=200, delta_actions=True,
+            env, agents, num_episodes=100, delta_actions=True,
             randomize=randomize, agents_saved_dir=f"./checkpoints/pome_agents_{dataset}",
             num_val_episodes=5, val_freq=10, use_wandb=False
         )
@@ -257,7 +263,7 @@ if __name__ == "__main__":
             max_delta=2.5,
             hidden_size=64,
             kernel_size=4,
-            stack_size=5,
+            stack_size=3,
             actor_lr=1e-5,
             critic_lr=3e-4,
         ) for agent_id in env.possible_agents}
@@ -265,7 +271,8 @@ if __name__ == "__main__":
         return_dict, _ = train_off_policy_multi_agent(
             env, agents, num_episodes=100, delta_actions=True,
             randomize=randomize,
-            agents_saved_dir=f"sac_agents_{dataset}",
+            agents_saved_dir=f"./checkpoints/sac_agents_{dataset}",
+            use_wandb=False
         )
 
     # plot critic loss
@@ -286,18 +293,18 @@ if __name__ == "__main__":
 
     SEED = 42
     randomized = True
-    num_runs = 10
+    num_runs = 15
     # Load agents for evaluation
-    agents, config_data = load_all_agents(save_dir=f"{algo}_agents_{dataset}", device="cpu")
+    agents, config_data = load_all_agents(save_dir=f"./checkpoints/{algo}_agents_{dataset}", device="cpu")
     # agents, config_data = load_all_agents(save_dir=f"ppo_agent_best", device="cpu")
 
     # Create fresh environment for evaluation
     base_env = PedNetParallelEnv(
-        dataset=dataset, normalize_obs=False, obs_mode=STATE_OPTION, render_mode="animate"
+        dataset=dataset, normalize_obs=builder_norm_obs, obs_mode=STATE_OPTION, render_mode="animate"
     )
     env = RunningNormalizeWrapper(base_env, norm_obs=NORM, norm_reward=False, training=False)
 
-    # Restore normalization stats
+    # Restore normalization stats for normed obs
     if 'normalization_stats' in config_data:
         env.set_normalization_stats(config_data['normalization_stats'])
 

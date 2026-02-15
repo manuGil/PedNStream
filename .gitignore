@@ -17,3 +17,5 @@
 /.cursorindexingignore
 .vscode
 Tables.xlsx
+# wandb
+/rl/wandb

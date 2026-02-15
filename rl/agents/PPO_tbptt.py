@@ -15,7 +15,7 @@ import os
 import random
 import collections
 from .SAC import MLPEncoder, StackedEncoder
-from .PPO_backup import AttentionPolicy, AttentionValueNetwork, train_on_policy_multi_agent
+from .PPO_backup import AttentionPolicy, AttentionValueNetwork, AttentionPolicyBeta, train_on_policy_multi_agent
 
 try:
     import wandb
@@ -113,7 +113,9 @@ class PPOAgent:
         # self.value_net = LSTMValueNetwork(obs_dim, act_dim, hidden_size=lstm_hidden_size,
         #                                num_layers=num_lstm_layers)
         self.actor = AttentionPolicy(obs_dim, act_dim, hidden_size=lstm_hidden_size,
-                                        num_layers=num_lstm_layers)
+                                        num_layers=num_lstm_layers, max_std=2.0)
+        # self.actor = AttentionPolicyBeta(obs_dim, act_dim, hidden_size=lstm_hidden_size,
+        #                                 num_layers=num_lstm_layers, act_low=self.act_low, act_high=self.act_high)
         self.value_net = AttentionValueNetwork(obs_dim, act_dim, hidden_size=lstm_hidden_size,
                                                 num_layers=num_lstm_layers)
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
@@ -133,7 +135,7 @@ class PPOAgent:
         self.action_noise_std_initial = action_noise_std
         self.action_noise_std = action_noise_std
         self.action_noise_std_min = action_noise_std_min
-        self.total_updates = num_episodes * 0.8
+        self.total_updates = num_episodes * 1
 
         # Learning rate scheduler settings
         self.use_lr_decay = use_lr_decay
@@ -267,16 +269,18 @@ class PPOAgent:
         # Store true reward for Dyna model training (use reward if true_reward not provided)
         self.transition_dict['true_rewards'].append(true_reward if true_reward is not None else reward)
 
-    def take_action(self, state, deterministic: bool = False):
+    def take_action(self, state, deterministic: bool = False, return_distribution: bool = False):
         """
         Take action given state using LSTM, stacked, or GAT-LSTM networks.
 
         Args:
             state: Observation array (single observation) or stacked observations (stack_size, obs_dim)
             deterministic: If True, use mean action (no sampling). Useful for evaluation.
+            return_distribution: If True, also return policy mean and std.
 
         Returns:
             action: Action array of shape (act_dim,)
+            If return_distribution=True: (action, mu, sigma) where mu and sigma are numpy arrays
         """
         # Convert state to tensor
         state_array = np.array(state)
@@ -311,7 +315,11 @@ class PPOAgent:
             # Direct absolute action
             action = torch.clamp(action, self.act_low, self.act_high)
             action_out = action.cpu().detach().numpy().squeeze()
-        
+
+        if return_distribution:
+            mu_out = mu.cpu().detach().numpy().squeeze()
+            sigma_out = sigma.cpu().detach().numpy().squeeze()
+            return action_out, mu_out, sigma_out
         return action_out
 
     def update(self):
@@ -341,50 +349,13 @@ class PPOAgent:
         # Use TBPTT chunking to match the training forward pass hidden state trajectory
         T_total = states_seq.size(1)
         with torch.no_grad():
-            all_next_values = []
-            all_current_values = []
-            all_old_log_probs = []
-            
-            actor_hidden_pre = None
-            critic_hidden_s = None   # for states
-            critic_hidden_ns = None  # for next_states
-            
-            for t in range(0, T_total, self.tm_window):
-                end_t = min(t + self.tm_window, T_total)
-                states_chunk = states_seq[:, t:end_t, :]
-                next_states_chunk = next_states_seq[:, t:end_t, :]
-                actions_chunk = actions[t:end_t]
-                
-                # Detach hidden states at chunk boundaries (same as training)
-                if actor_hidden_pre is not None:
-                    actor_hidden_pre = (actor_hidden_pre[0].detach(), actor_hidden_pre[1].detach())
-                if critic_hidden_s is not None:
-                    critic_hidden_s = (critic_hidden_s[0].detach(), critic_hidden_s[1].detach())
-                if critic_hidden_ns is not None:
-                    critic_hidden_ns = (critic_hidden_ns[0].detach(), critic_hidden_ns[1].detach())
-                
-                # Value network forward (states and next_states)
-                chunk_current_values, critic_hidden_s = self.value_net(states_chunk, critic_hidden_s)
-                chunk_current_values = chunk_current_values.squeeze(0)
-                
-                chunk_next_values, critic_hidden_ns = self.value_net(next_states_chunk, critic_hidden_ns)
-                chunk_next_values = chunk_next_values.squeeze(0)
-                
-                # Actor forward for old log probs
-                mu, std, actor_hidden_pre = self.actor(states_chunk, actor_hidden_pre)
-                mu = mu.squeeze(0)
-                std = std.squeeze(0)
-                action_dist = torch.distributions.Normal(mu, std)
-                chunk_old_log_probs = action_dist.log_prob(actions_chunk)
-                
-                all_current_values.append(chunk_current_values)
-                all_next_values.append(chunk_next_values)
-                all_old_log_probs.append(chunk_old_log_probs)
-            
-            # Concatenate chunks
-            current_values = torch.cat(all_current_values, dim=0)  # (T, 1)
-            next_values = torch.cat(all_next_values, dim=0)        # (T, 1)
-            old_log_probs = torch.cat(all_old_log_probs, dim=0)    # (T, act_dim)
+            # Process entire sequences through value network
+            # LSTM version
+            next_values, _ = self.value_net(next_states_seq)  # (1, T, 1)
+            next_values = next_values.squeeze(0)  # (T, 1)
+
+            current_values, _ = self.value_net(states_seq)  # (1, T, 1)
+            current_values = current_values.squeeze(0)  # (T, 1)
 
             td_target = rewards + self.gamma * next_values * (1 - dones)
             td_delta = td_target - current_values
@@ -395,11 +366,19 @@ class PPOAgent:
             # Normalize advantage (crucial for stable training)
             advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
 
+            # Process sequence through actor to get old log probs
+            mu, std, _ = self.actor(states_seq)  # (1, T, act_dim)
+            mu = mu.squeeze(0)  # (T, act_dim)
+            std = std.squeeze(0)  # (T, act_dim)
+            action_dist = torch.distributions.Normal(mu, std)
+            old_log_probs = action_dist.log_prob(actions)
+
         # PPO update epochs with truncated backpropagation through time
         for _ in range(self.epochs):
             # Forward pass through actor
             actor_hidden = None
             critic_hidden = None
+            epoch_kl_exceeded = False
             # Accumulate gradients across TBPTT chunks and apply a single optimizer step per epoch.
             self.actor_optimizer.zero_grad()
             self.critic_optimizer.zero_grad()
@@ -437,12 +416,16 @@ class PPOAgent:
                 
                 actor_loss.backward()
                 critic_loss.backward()
-    
+
                 #     KL early stopping
                 with torch.no_grad():
                     approx_kl = (log_probs - old_log_probs_chunk).mean()
                     if approx_kl > 1.5 * self.kl_tolerance:
+                        epoch_kl_exceeded = True
                         break
+
+            if epoch_kl_exceeded:
+                break
 
             # gradient clipping (once per epoch, after accumulating all chunks)
             torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=0.5)
@@ -503,52 +486,20 @@ class PPOAgent:
                 next_states_seq = next_states.unsqueeze(0)
                 T_traj = states_seq.size(1)
                 
-                # Compute values and old log probs using TBPTT chunks
-                # This matches the chunked forward pass in the training loop
-                all_next_values = []
-                all_current_values = []
-                all_old_log_probs = []
+                # Compute values and old log probs for the entire trajectory
+                # Process entire sequences through value network
+                next_values, _ = self.value_net(next_states_seq)
+                next_values = next_values.squeeze(0)  # (T, 1)
                 
-                actor_hidden = None
-                critic_hidden_s = None  # for states
-                critic_hidden_ns = None  # for next_states
+                current_values, _ = self.value_net(states_seq)
+                current_values = current_values.squeeze(0)  # (T, 1)
                 
-                for t in range(0, T_traj, self.tm_window):
-                    end_t = min(t + self.tm_window, T_traj)
-                    states_chunk = states_seq[:, t:end_t, :]
-                    next_states_chunk = next_states_seq[:, t:end_t, :]
-                    actions_chunk = actions[t:end_t]
-                    
-                    # Detach hidden states at chunk boundaries (same as training)
-                    if actor_hidden is not None:
-                        actor_hidden = (actor_hidden[0].detach(), actor_hidden[1].detach())
-                    if critic_hidden_s is not None:
-                        critic_hidden_s = (critic_hidden_s[0].detach(), critic_hidden_s[1].detach())
-                    if critic_hidden_ns is not None:
-                        critic_hidden_ns = (critic_hidden_ns[0].detach(), critic_hidden_ns[1].detach())
-                    
-                    # Value network forward (states and next_states)
-                    chunk_current_values, critic_hidden_s = self.value_net(states_chunk, critic_hidden_s)
-                    chunk_current_values = chunk_current_values.squeeze(0)  # (chunk_len, 1)
-                    
-                    chunk_next_values, critic_hidden_ns = self.value_net(next_states_chunk, critic_hidden_ns)
-                    chunk_next_values = chunk_next_values.squeeze(0)  # (chunk_len, 1)
-                    
-                    # Actor forward for old log probs
-                    mu, std, actor_hidden = self.actor(states_chunk, actor_hidden)
-                    mu = mu.squeeze(0)
-                    std = std.squeeze(0)
-                    action_dist = torch.distributions.Normal(mu, std)
-                    chunk_old_log_probs = action_dist.log_prob(actions_chunk)
-                    
-                    all_current_values.append(chunk_current_values)
-                    all_next_values.append(chunk_next_values)
-                    all_old_log_probs.append(chunk_old_log_probs)
-                
-                # Concatenate chunks
-                current_values = torch.cat(all_current_values, dim=0)  # (T, 1)
-                next_values = torch.cat(all_next_values, dim=0)  # (T, 1)
-                old_log_probs = torch.cat(all_old_log_probs, dim=0)  # (T, act_dim)
+                # Actor forward for old log probs
+                mu, std, _ = self.actor(states_seq)
+                mu = mu.squeeze(0)
+                std = std.squeeze(0)
+                action_dist = torch.distributions.Normal(mu, std)
+                old_log_probs = action_dist.log_prob(actions)
                 
                 # TD targets and advantages
                 td_target = rewards + self.gamma * next_values * (1 - dones)
@@ -642,25 +593,12 @@ class PPOAgent:
                     # Accumulate gradients
                     actor_loss.backward()
                     critic_loss.backward()
-                    
-                    # KL early stopping check
-                    with torch.no_grad():
-                        approx_kl = (log_probs - old_log_probs_chunk).mean()
-                        if approx_kl > 1.5 * self.kl_tolerance:
-                            epoch_kl_exceeded = True
-                            break
-                
-                if epoch_kl_exceeded:
-                    break
             
             # Gradient clipping and optimizer step (once per epoch)
             torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=0.5)
             torch.nn.utils.clip_grad_norm_(self.value_net.parameters(), max_norm=0.5)
             self.actor_optimizer.step()
             self.critic_optimizer.step()
-            
-            if epoch_kl_exceeded:
-                break
         
         # Clear batch buffer after update
         self.clear_batch_buffer()
@@ -676,9 +614,17 @@ class PPOAgent:
 
     def _decay_entropy_coef(self):
         """Apply exponential decay to entropy coefficient."""
-        progress = min(self.update_count / self.total_updates, 1.0)
-        self.entropy_coef = self.entropy_coef_initial + \
-            (self.entropy_coef_min - self.entropy_coef_initial) * progress
+        # Exponential decay: coef = initial * decay_rate^step
+        # decay_rate is chosen so that coef ≈ entropy_coef_min at total_updates
+        if self.entropy_coef_initial > 0 and self.entropy_coef_min > 0:
+            decay_rate = (self.entropy_coef_min / self.entropy_coef_initial) ** (1.0 / max(self.total_updates, 1))
+            self.entropy_coef = max(self.entropy_coef_initial * (decay_rate ** self.update_count),
+                                    self.entropy_coef_min)
+        else:
+            # Fallback to linear if initial or min is zero (can't do exp with zero)
+            progress = min(self.update_count / self.total_updates, 1.0)
+            self.entropy_coef = self.entropy_coef_initial + \
+                (self.entropy_coef_min - self.entropy_coef_initial) * progress
 
     def _setup_lr_scheduler(self):
         """Set up linear warmup + cosine decay LR scheduler for actor and critic.
@@ -813,7 +759,8 @@ class PPOAgent:
 def train_on_policy_multi_agent_batch(env, agents, delta_actions=False, num_episodes=50,
                                       num_trajectories_per_update=4, randomize=False,
                                       agents_saved_dir: str = None, use_wandb: bool = True,
-                                      val_freq: int = 10, num_val_episodes: int = 3):
+                                      val_freq: int = 10, num_val_episodes: int = 3,
+                                      debug_save_dir: str = None, debug_save_episodes: list = None):
     """
     Train multiple on-policy agents (PPO) using batch trajectory updates.
     
@@ -831,6 +778,10 @@ def train_on_policy_multi_agent_batch(env, agents, delta_actions=False, num_epis
         use_wandb: If True, log metrics to wandb (default: True)
         val_freq: Validation frequency - run validation every N updates (default: 10)
         num_val_episodes: Number of validation episodes to run (default: 3)
+        debug_save_dir: Base directory for saving debug simulation data. If None, no debug saves.
+        debug_save_episodes: List of episode numbers at which to save simulation data for
+            visualization (compatible with evaluate_and_visualize.py). E.g., [1, 100, 200].
+            Saves to {debug_save_dir}_run1, _run2, etc. If None, no debug saves.
 
     Returns:
         return_dict: Dict mapping agent_id -> list of episode returns
@@ -848,6 +799,9 @@ def train_on_policy_multi_agent_batch(env, agents, delta_actions=False, num_epis
 
     # Track best average return across all agents
     best_avg_return = float('-inf')
+
+    # Episodes at which to save simulation data for debugging
+    debug_episodes = tuple(debug_save_episodes) if debug_save_episodes else None
 
     # Check if any agent uses stacked observations
     first_agent_id = next(iter(agents))
@@ -876,7 +830,7 @@ def train_on_policy_multi_agent_batch(env, agents, delta_actions=False, num_epis
     if hasattr(first_agent, "total_updates"):
         effective_updates = max(
             1,
-            int(num_episodes / float(max(1, num_trajectories_per_update)) * 1),
+            int(num_episodes / float(max(1, num_trajectories_per_update)) * 0.8),
         )
         for agent in agents.values():
             agent.total_updates = effective_updates
@@ -884,6 +838,8 @@ def train_on_policy_multi_agent_batch(env, agents, delta_actions=False, num_epis
     # Track returns for current batch (for logging)
     batch_returns = {agent_id: [] for agent_id in agents.keys()}
     batch_true_returns = {agent_id: [] for agent_id in agents.keys()}
+    batch_policy_mu = {agent_id: [] for agent_id in agents.keys()}
+    batch_policy_sigma = {agent_id: [] for agent_id in agents.keys()}
 
     num_iterations = 10
     episodes_per_iteration = num_episodes // num_iterations
@@ -926,8 +882,10 @@ def train_on_policy_multi_agent_batch(env, agents, delta_actions=False, num_epis
                             agent_state = state_stack[agent_id]
                         else:
                             agent_state = obs[agent_id]
-                        action = agent.take_action(agent_state)
-                        
+                        action, mu, sigma = agent.take_action(agent_state, return_distribution=True)
+                        batch_policy_mu[agent_id].append(np.atleast_1d(mu))
+                        batch_policy_sigma[agent_id].append(np.atleast_1d(sigma))
+
                         if delta_actions:
                             absolute_action = obs[agent_id].reshape(agents[agent_id].act_dim, -1)[:,-1] + action
                             absolute_action = np.clip(absolute_action, agents[agent_id].act_low, agents[agent_id].act_high)
@@ -935,7 +893,7 @@ def train_on_policy_multi_agent_batch(env, agents, delta_actions=False, num_epis
                         else:
                             absolute_actions[agent_id] = action
                         actions[agent_id] = action
-                    
+
                     # Step environment
                     next_obs, rewards, terms, truncs, infos = env.step(absolute_actions)
                     next_state_stack = {}
@@ -982,6 +940,13 @@ def train_on_policy_multi_agent_batch(env, agents, delta_actions=False, num_epis
 
                 global_episode += 1
 
+                # Save simulation data for debugging - compatible with evaluate_and_visualize
+                if debug_save_dir and debug_episodes and global_episode in debug_episodes:
+                    run_idx = debug_episodes.index(global_episode) + 1
+                    save_path = f"{debug_save_dir}_run{run_idx}"
+                    env.save(save_path)
+                    print(f"[Debug] Saved simulation at episode {global_episode} to {save_path}")
+
                 # Check if we have enough trajectories for batch update
                 first_agent = next(iter(agents.values()))
                 if first_agent.get_batch_size() >= num_trajectories_per_update:
@@ -1014,10 +979,22 @@ def train_on_policy_multi_agent_batch(env, agents, delta_actions=False, num_epis
                         log_dict['actor_lr'] = first_agent_lr['actor_lr']
                         log_dict['critic_lr'] = first_agent_lr['critic_lr']
                         log_dict['entropy_coef'] = first_agent.entropy_coef
+                        # Log policy network's true mean (mu) and std (sigma) per agent per dimension
+                        for agent_id in agents.keys():
+                            if batch_policy_mu[agent_id]:
+                                mu_arr = np.array(batch_policy_mu[agent_id])  # (num_steps, act_dim)
+                                sigma_arr = np.array(batch_policy_sigma[agent_id])
+                                # Average across all steps in the batch
+                                avg_mu = np.mean(mu_arr, axis=0)
+                                avg_sigma = np.mean(sigma_arr, axis=0)
+                                for d in range(len(avg_mu)):
+                                    log_dict[f'agent_{agent_id}_policy_mu_{d}'] = float(avg_mu[d])
+                                    log_dict[f'agent_{agent_id}_policy_sigma_{d}'] = float(avg_sigma[d])
                         wandb.log(log_dict)
 
                     # Run validation and save best model
                     if agents_saved_dir and global_update > (num_episodes // num_trajectories_per_update) // 2 and global_update % val_freq == 0:
+                    # if agents_saved_dir and global_update % val_freq == 0:
                         best_avg_return = validate_and_save_best(
                             env, agents, agents_saved_dir,
                             delta_actions=delta_actions,
@@ -1031,6 +1008,8 @@ def train_on_policy_multi_agent_batch(env, agents, delta_actions=False, num_epis
                     # Reset batch return tracking
                     batch_returns = {agent_id: [] for agent_id in agents.keys()}
                     batch_true_returns = {agent_id: [] for agent_id in agents.keys()}
+                    batch_policy_mu = {agent_id: [] for agent_id in agents.keys()}
+                    batch_policy_sigma = {agent_id: [] for agent_id in agents.keys()}
 
                 # Update progress bar
                 if (i_episode + 1) % 10 == 0:

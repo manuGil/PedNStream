@@ -64,6 +64,8 @@ class ObservationBuilder:
         self.speed_norm = 1.5       # Typical free-flow speed
         # self.time_norm = 100.0      # Typical travel time
         self.flow_norm = 20.0       # Typical flow rate
+        # self.link_widths = []      # list of link widths for normalization
+        self.unit_time = network.params['unit_time']
     
     def build_observation(self, agent_id: str, time_step: int) -> np.ndarray:
         """
@@ -122,7 +124,8 @@ class ObservationBuilder:
         max_outdegree = self.agent_manager.get_max_outdegree(agent_id)  # no padding
         
         obs = np.zeros(max_outdegree * self.features_per_link, dtype=np.float32)
-        
+        current_link_widths = []
+
         for i, link in enumerate(out_links):
             start_idx = i * self.features_per_link
             
@@ -148,6 +151,8 @@ class ObservationBuilder:
                     link.reverse_link.outflow[time_step] if time_step < len(link.reverse_link.outflow) else 0.0,
                     link.back_gate_width,
                 ]
+                current_link_widths.append(link.width)
+
             elif self.obs_mode == "option4":
                 link_features = [
                     link.inflow[time_step] if time_step < len(link.inflow) else 0.0,
@@ -172,7 +177,7 @@ class ObservationBuilder:
         
         # Apply normalization if enabled
         if self.normalize:
-            obs = self._normalize_gater_obs(obs)
+            obs = self._normalize_gater_obs(obs, current_link_widths)
         
         return obs
     
@@ -200,7 +205,7 @@ class ObservationBuilder:
         
         return normalized
     
-    def _normalize_gater_obs(self, obs: np.ndarray) -> np.ndarray:
+    def _normalize_gater_obs(self, obs: np.ndarray, link_widths: List[float] = None) -> np.ndarray:
         """Normalize gater observation features based on obs_mode."""
         normalized = obs.copy()
         
@@ -222,16 +227,19 @@ class ObservationBuilder:
                 normalized[start_idx] /= self.flow_norm
                 normalized[start_idx + 1] /= self.flow_norm
             elif self.obs_mode == "option3":
-                # Normalize inflow (index 0)
-                normalized[start_idx] /= self.flow_norm
-                # Normalize flow (indices 1, 2)
-                normalized[start_idx + 1] /= self.flow_norm
-                # normalized[start_idx + 1]  = np.clip(normalized[start_idx]/100, 0, 1)
-                normalized[start_idx + 2] /= self.flow_norm
-                normalized[start_idx + 3] /= self.flow_norm
-                # normalize the gate width (index 4)
-                # normalized[start_idx + 4] /= 
-                # normalized[start_idx + 1]  = np.clip(normalized[start_idx]/100, 0, 1)
+                if link_widths and i < len(link_widths):
+                    width = link_widths[i]
+                    # Max flow estimate: width * unit_time * speed (1.5) * density (2.0)
+                    max_flow = width * self.unit_time * 1.5 * 2
+                    
+                    # Normalize inflow (index 0)
+                    normalized[start_idx] = np.clip(normalized[start_idx]/max_flow, 0, 1)
+                    # Normalize flow (indices 1, 2)
+                    normalized[start_idx + 1] = np.clip(normalized[start_idx + 1]/max_flow, 0, 1)
+                    normalized[start_idx + 2] = np.clip(normalized[start_idx + 2]/max_flow, 0, 1)
+                    normalized[start_idx + 3] = np.clip(normalized[start_idx + 3]/max_flow, 0, 1)
+                    # normalize the gate width (index 4)
+                    normalized[start_idx + 4] = np.clip(normalized[start_idx + 4]/width, 0, 1)
             elif self.obs_mode == "option4":
                 # Normalize density (index 0)
                 normalized[start_idx] /= self.density_norm

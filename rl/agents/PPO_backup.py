@@ -636,7 +636,7 @@ class AttentionPolicy(nn.Module):
 
     def forward(self, x, hidden=None):
         if x.dim() == 3:
-            x = x.squeeze()
+            x = x.squeeze(0)
         seq_len = x.shape[0]
         
         # 1. Prepare Input
@@ -677,6 +677,153 @@ class AttentionPolicy(nn.Module):
         std = F.softplus(self.std_head(F.relu(coordinated_features))).squeeze(-1).clamp(self.min_std, self.max_std)
 
         return mean, std, hidden_out
+
+
+class AttentionPolicyBeta(nn.Module):
+    """
+    Beta distribution policy for bounded absolute actions.
+    
+    Drop-in replacement for AttentionPolicy. The forward() method returns
+    (mean, std, hidden) in the action space [act_low, act_high], identical
+    to AttentionPolicy's interface.
+    
+    Internally uses Beta distribution which is naturally bounded in [0, 1],
+    then scaled to the action range. This is suitable for absolute action
+    control where actions must stay within physical bounds.
+    
+    Note: Requires act_low and act_high to be set after construction via
+    set_action_bounds() or passed to __init__ if using extended signature.
+    """
+    def __init__(self, obs_dim, act_dim, hidden_size=64, num_layers=1,
+                 min_std=1e-3, max_std=10.0, act_low=None, act_high=None):
+        """
+        Args:
+            obs_dim: Observation dimension
+            act_dim: Action dimension (number of links/gates)
+            hidden_size: LSTM hidden size
+            num_layers: Number of LSTM layers
+            min_std: Minimum std (for compatibility, maps to min_alpha_beta internally)
+            max_std: Maximum std (for compatibility, not strictly enforced with Beta)
+            act_low: Lower bound of action space (optional, can set later)
+            act_high: Upper bound of action space (optional, can set later)
+        """
+        super().__init__()
+        self.obs_dim = obs_dim
+        self.act_dim = act_dim
+        self.features_per_link = obs_dim // act_dim
+        self.hidden_size = hidden_size
+        self.min_std = min_std
+        self.max_std = max_std
+        # min_alpha_beta > 1 ensures unimodal Beta distribution
+        self.min_alpha_beta = 1.01
+
+        # Initialize action bounds (can be set later via set_action_bounds)
+        if act_low is not None:
+            if not isinstance(act_low, torch.Tensor):
+                act_low = torch.tensor(act_low, dtype=torch.float32)
+            self.register_buffer('act_low', act_low.flatten())
+        else:
+            self.register_buffer('act_low', torch.zeros(act_dim))
+            
+        if act_high is not None:
+            if not isinstance(act_high, torch.Tensor):
+                act_high = torch.tensor(act_high, dtype=torch.float32)
+            self.register_buffer('act_high', act_high.flatten())
+        else:
+            self.register_buffer('act_high', torch.ones(act_dim))
+
+        # Shared LSTM
+        self.lstm = nn.LSTM(
+            input_size=self.features_per_link,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True
+        )
+        
+        # Link-specific feature extractor
+        self.link_model = nn.Linear(hidden_size, hidden_size)
+        
+        # Multi-Head Attention for link coordination
+        self.attention_layer = nn.MultiheadAttention(
+            embed_dim=hidden_size, 
+            num_heads=2,
+            batch_first=True
+        )
+
+        # Layer normalization
+        self.layer_norm = nn.LayerNorm(hidden_size)
+
+        # Per-link heads for Beta distribution parameters (named to match AttentionPolicy)
+        self.mean_head = nn.Linear(hidden_size, 1)  # outputs alpha
+        self.std_head = nn.Linear(hidden_size, 1)   # outputs beta
+
+    def set_action_bounds(self, act_low, act_high):
+        """Set action bounds after construction."""
+        if not isinstance(act_low, torch.Tensor):
+            act_low = torch.tensor(act_low, dtype=torch.float32)
+        if not isinstance(act_high, torch.Tensor):
+            act_high = torch.tensor(act_high, dtype=torch.float32)
+        self.act_low = act_low.flatten().to(self.mean_head.weight.device)
+        self.act_high = act_high.flatten().to(self.mean_head.weight.device)
+
+    def forward(self, x, hidden=None):
+        """
+        Forward pass returning mean and std in action space (same as AttentionPolicy).
+        
+        Internally computes Beta distribution parameters (alpha, beta) and converts
+        to mean and std in the action space [act_low, act_high].
+        
+        Returns:
+            mean: (seq_len, act_dim) - Mean of distribution in action space
+            std: (seq_len, act_dim) - Std of distribution in action space
+            hidden: LSTM hidden state
+        """
+        if x.dim() == 3:
+            x = x.squeeze(0)
+        seq_len = x.shape[0]
+        
+        # 1. Prepare Input: (seq_len, num_links, features)
+        x_lstm_input = x.view(seq_len, self.act_dim, self.features_per_link).transpose(0, 1)
+        
+        # 2. LSTM (Independent processing)
+        lstm_out, hidden_out = self.lstm(x_lstm_input, hidden) 
+        lstm_features = lstm_out.transpose(0, 1)  # (seq_len, num_links, hidden_size)
+        
+        # 3. Link Features
+        link_features = self.link_model(lstm_features) 
+
+        # 4. Coordination via Attention
+        attn_out, _ = self.attention_layer(
+            query=link_features, 
+            key=link_features, 
+            value=link_features
+        )
+        
+        # Residual connection + layer norm
+        coordinated_features = link_features + attn_out
+        coordinated_features = self.layer_norm(coordinated_features)
+        
+        # 5. Beta distribution parameters
+        alpha = F.softplus(self.mean_head(F.relu(coordinated_features))).squeeze(-1) + self.min_alpha_beta
+        beta = F.softplus(self.std_head(F.relu(coordinated_features))).squeeze(-1) + self.min_alpha_beta
+
+        # Convert to mean and std in action space
+        # Beta distribution mean: alpha / (alpha + beta) in [0, 1]
+        raw_mean = alpha / (alpha + beta)
+        # Beta distribution std: sqrt(alpha*beta / ((alpha+beta)^2 * (alpha+beta+1)))
+        raw_var = (alpha * beta) / ((alpha + beta) ** 2 * (alpha + beta + 1))
+        raw_std = torch.sqrt(raw_var)
+        
+        # Scale to action space [act_low, act_high]
+        scale = self.act_high - self.act_low
+        mean = self.act_low + raw_mean * scale
+        std = raw_std * scale
+        
+        # Clamp std to [min_std, max_std] for compatibility
+        std = std.clamp(self.min_std, self.max_std)
+
+        return mean, std, hidden_out
+
 
 class AttentionValueNetwork(nn.Module):
     def __init__(self, obs_dim, act_dim, hidden_size=64, num_layers=1):
@@ -719,7 +866,7 @@ class AttentionValueNetwork(nn.Module):
             hidden: (h, c)
         """
         if x.dim() == 3:
-            x = x.squeeze()
+            x = x.squeeze(0)
         seq_len = x.shape[0]
 
         # --- Phase 1: Individual Link Processing ---

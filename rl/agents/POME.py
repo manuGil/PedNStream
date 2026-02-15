@@ -148,7 +148,7 @@ class POMEAgent:
     def __init__(self, obs_dim, act_dim, act_low, act_high, actor_lr=3e-4, critic_lr=6e-4,
                  gamma=0.99, lmbda=0.95, epochs=10, device="cpu",
                  clip_eps=0.2, entropy_coef=0.01, entropy_coef_decay=0.995,
-                 entropy_coef_min=0, kl_tolerance=0.01,
+                 entropy_coef_min=0.001, kl_tolerance=0.01,
                  use_delta_actions=False, max_delta=2.5,
                  lstm_hidden_size=64, num_lstm_layers=1,
                  hidden_size=64,
@@ -234,6 +234,9 @@ class POMEAgent:
                                         num_layers=num_lstm_layers)
         self.value_net = AttentionValueNetwork(obs_dim, act_dim, hidden_size=lstm_hidden_size,
                                                 num_layers=num_lstm_layers)
+        # Store learning rates for optimizer reset
+        self.actor_lr = actor_lr
+        self.critic_lr = critic_lr
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
         self.critic_optimizer = torch.optim.Adam(self.value_net.parameters(), lr=critic_lr)
         self.device = device
@@ -292,6 +295,11 @@ class POMEAgent:
         # Apply parameter noise at the start of each episode
         if self.use_param_noise:
             self._apply_param_noise()
+
+    def reset_optimizer(self):
+        """Reset optimizer state (keeps network weights, clears momentum). Used for curriculum learning."""
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.actor_lr)
+        self.critic_optimizer = torch.optim.Adam(self.value_net.parameters(), lr=self.critic_lr)
 
     def _apply_param_noise(self):
         """Apply Gaussian noise to actor network parameters for exploration."""
