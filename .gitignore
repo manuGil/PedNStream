@@ -20,3 +20,6 @@ Tables.xlsx
 # wandb
 /rl/wandb
 /rl/checkpoints
+
+#Sphinx build files
+docs/_build
