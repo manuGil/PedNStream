@@ -5,8 +5,8 @@ import json
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
-from src.LTM.network import Network
-from src.LTM.link import Separator
+from pednstream.ltm.network import Network
+from pednstream.ltm.link import Separator
 
 class OutputHandler:
     def __init__(self, base_dir="outputs", simulation_dir=None):

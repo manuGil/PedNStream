@@ -13,8 +13,10 @@ mappings between agent IDs and network components.
 
 import numpy as np
 from typing import Dict, List, Set, Tuple, Any
-from src.LTM.link import Separator, Link
-from src.LTM.node import Node
+# from src.LTM.link import Separator, Link
+from pednstream.ltm.link import Separator, Link
+# from src.LTM.node import Node
+from pednstream.ltm.node import Node
 
 
 class AgentManager:

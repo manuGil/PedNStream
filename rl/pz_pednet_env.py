@@ -20,8 +20,10 @@ import gymnasium as gym
 from gymnasium import spaces
 import functools
 
-from src.utils.env_loader import NetworkEnvGenerator
-from src.utils.visualizer import NetworkVisualizer, progress_callback
+# from src.utils.env_loader import NetworkEnvGenerator
+# from src.utils.visualizer import NetworkVisualizer, progress_callback
+from pednstream.utils.env_loader import NetworkEnvGenerator
+from pednstream.utils.visualizer import NetworkVisualizer, progress_callback
 from .discovery import AgentManager
 from .spaces import SpaceBuilder
 from .builders import ObservationBuilder, ActionApplier

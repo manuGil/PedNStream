@@ -19,7 +19,8 @@ Observation Modes:
 import numpy as np
 from typing import Dict, Any, List
 from .discovery import AgentManager
-from src.LTM.link import Link, Separator
+# from src.LTM.link import Link, Separator
+from pednstream.ltm.link import Link, Separator
 
 
 class ObservationBuilder:

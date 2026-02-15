@@ -10,12 +10,14 @@ The NetworkEnvGenerator class is used to load the network data and generate the 
 """
 
 import json
-from src.LTM.network import Network
+# from src.LTM.network import Network
+from pednstream.ltm.network import Network
 import os
 from pathlib import Path
 import numpy as np
 import pickle
-from src.utils.config import load_config
+# from src.utils.config import load_config
+from pednstream.utils.config import load_config
 from typing import List, Callable
 import copy
 
@@ -25,7 +27,9 @@ class NetworkEnvGenerator:
     def __init__(self, data_dir="data"):
         # self.simulation_params = simulation_params
         # create the data directory 'project_root/data'
-        project_root = Path(__file__).resolve().parent.parent.parent
+        # __file__ is at: src/pednstream/utils/env_loader.py
+        # Go up 4 levels: utils -> pednstream -> src -> project_root
+        project_root = Path(__file__).resolve().parent.parent.parent.parent
         self.data_dir = project_root / data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.network = None
@@ -43,7 +47,8 @@ class NetworkEnvGenerator:
         Returns:
             Dictionary containing network data
         """
-        yaml_file_path = os.path.join(self.data_dir, f"{data_path}", "sim_params.yaml")
+        # yaml_file_path = os.path.join(self.data_dir, f"{data_path}", "sim_params.yaml")
+        yaml_file_path = os.path.join(self.data_dir, data_path, "sim_params.yaml")
 
         if not os.path.exists(yaml_file_path):
             raise FileNotFoundError(f"Network data file not found: {yaml_file_path}")
@@ -55,21 +60,21 @@ class NetworkEnvGenerator:
             self._original_config = copy.deepcopy(self.config)
 
         #if exists, load the edge distances
-        if os.path.exists(os.path.join(self.data_dir, f"{data_path}", "edge_distances.pkl")):
-            with open(os.path.join(self.data_dir, f"{data_path}", "edge_distances.pkl"), 'rb') as f:
+        if os.path.exists(os.path.join(self.data_dir, data_path, "edge_distances.pkl")):
+            with open(os.path.join(self.data_dir, data_path, "edge_distances.pkl"), 'rb') as f:
                 edge_distances = pickle.load(f)
         else:
             edge_distances = None
 
         #if adj not in yaml, load the adjacency matrix
         if 'adjacency_matrix' not in self.config:
-            adjacency_matrix = np.load(os.path.join(self.data_dir, f"{data_path}", "adj_matrix.npy"))
+            adjacency_matrix = np.load(os.path.join(self.data_dir, data_path, "adj_matrix.npy"))
         else:
             adjacency_matrix = self.config['adjacency_matrix']
 
         # load the node positions if it exists
-        if os.path.exists(os.path.join(self.data_dir, f"{data_path}", "node_positions.json")):
-            with open(os.path.join(self.data_dir, f"{data_path}", "node_positions.json"), 'r') as f:
+        if os.path.exists(os.path.join(self.data_dir, data_path, "node_positions.json")):
+            with open(os.path.join(self.data_dir, data_path, "node_positions.json"), 'r') as f:
                 node_positions = {str(node): pos for node, pos in json.load(f).items()}
         else:
             node_positions = None
@@ -83,7 +88,7 @@ class NetworkEnvGenerator:
 
         return data
 
-    def create_network(self, yaml_file_path: str,
+    def create_network(self, data_path: str,
                        custom_demand_functions: List[Callable] = None,
                        od_flows: dict = None,
                        link_params_overrides: dict = None,
@@ -92,10 +97,11 @@ class NetworkEnvGenerator:
         """Create network from saved data, simulation_params is the config dict of the yaml file
         
         Args:
+            data_path: Name of the folder in the data directory (e.g., 'butterfly_scC', 'delft')
             verbose: If True, enable logging output. Default True for backward compatibility.
         """
         if self.network_data is None:
-            self.network_data = self.load_network_data(yaml_file_path)
+            self.network_data = self.load_network_data(data_path)
 
         # Set up the simulation params, Add link-specific parameters using edge distances
         default_link_params = self.config['params']['default_link']
@@ -176,11 +182,11 @@ class NetworkEnvGenerator:
 
         return self.network
 
-    def randomize_network(self, yaml_file_path: str, seed: int = None, randomize_params: dict = None, verbose: bool = True):
+    def randomize_network(self, data_path: str, seed: int = None, randomize_params: dict = None, verbose: bool = True):
         """
         Randomize network parameters
         Args:
-            yaml_file_path: Path to the network data folder
+            data_path: Name of the folder in the data directory (e.g., 'butterfly_scC', 'delft')
             seed: Random seed for reproducibility, not used in RL
             randomize_params: Dictionary containing randomization parameters
             verbose: If True, enable logging output. Default True for backward compatibility.
@@ -199,7 +205,7 @@ class NetworkEnvGenerator:
         
         # Create network with overrides
         network = self.create_network(
-            yaml_file_path, 
+            data_path, 
             od_flows=reset_od_flows, 
             # link_params_overrides=reset_link_params,
             demand_params_overrides=reset_demand_params,

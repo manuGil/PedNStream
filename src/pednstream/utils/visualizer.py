@@ -6,7 +6,8 @@ import pandas as pd
 import os
 from tqdm import tqdm
 import numpy as np
-from src.LTM.link import Separator
+# from src.LTM.link import Separator
+from pednstream.ltm.link import Separator
 
 class NetworkVisualizer:
     def __init__(self, network=None, simulation_dir=None, pos=None):
