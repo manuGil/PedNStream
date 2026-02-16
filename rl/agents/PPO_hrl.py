@@ -178,17 +178,26 @@ class DurationAttentionPolicy(nn.Module):
 class DurationAttentionValueNetwork(nn.Module):
     """Attention-based value network for HRL with duration-augmented actions.
 
-    Identical architecture to AttentionValueNetwork but fixes a squeeze()
-    bug that causes shape errors when seq_len == 1 (common in HRL due to
-    shorter macro-transition sequences).
+    Uses attention-based pooling instead of mean pooling for better global
+    aggregation. The learned query attends to all link features, allowing
+    the network to weight links by their importance for value estimation.
+
+    Fusion options:
+        - 'attention': Learned query attends to links (default, recommended)
+        - 'mean': Simple mean pooling (original)
+        - 'max': Max pooling
+        - 'mean_max': Concatenate mean and max pooling
+        - 'gated': Gated attention pooling with sigmoid weights
     """
 
-    def __init__(self, obs_dim, act_dim, hidden_size=64, num_layers=1, num_heads=2):
+    def __init__(self, obs_dim, act_dim, hidden_size=64, num_layers=1, num_heads=2,
+                 fusion='attention'):
         super().__init__()
         self.obs_dim = obs_dim
         self.act_dim = act_dim
         self.features_per_link = obs_dim // act_dim
         self.hidden_size = hidden_size
+        self.fusion = fusion
 
         # Shared LSTM
         self.lstm = nn.LSTM(
@@ -211,8 +220,37 @@ class DurationAttentionValueNetwork(nn.Module):
         # Layer normalization
         self.layer_norm = nn.LayerNorm(hidden_size)
 
+        # Fusion-specific layers
+        if fusion == 'attention':
+            # Learned global query for attention pooling
+            self.global_query = nn.Parameter(torch.randn(1, 1, hidden_size) * 0.02)
+            self.pool_attention = nn.MultiheadAttention(
+                embed_dim=hidden_size,
+                num_heads=num_heads,
+                batch_first=True
+            )
+            value_input_dim = hidden_size
+        elif fusion == 'mean_max':
+            # Concatenate mean and max → 2x hidden_size
+            value_input_dim = hidden_size * 2
+        elif fusion == 'gated':
+            # Gated attention: learn importance weights per link
+            self.gate_fc = nn.Sequential(
+                nn.Linear(hidden_size, hidden_size // 2),
+                nn.ReLU(),
+                nn.Linear(hidden_size // 2, 1)
+            )
+            value_input_dim = hidden_size
+        else:  # 'mean' or 'max'
+            value_input_dim = hidden_size
+
         # Global value head
         self.value_head = nn.Linear(hidden_size, 1)
+        # self.value_head = nn.Sequential(
+        #     nn.Linear(value_input_dim, hidden_size // 2),
+        #     nn.ReLU(),
+        #     nn.Linear(hidden_size // 2, 1)
+        # )
 
     def forward(self, x, hidden=None):
         """
@@ -241,9 +279,31 @@ class DurationAttentionValueNetwork(nn.Module):
             query=link_features, key=link_features, value=link_features
         )
         coordinated = self.layer_norm(link_features + attn_out)
+        # coordinated: (seq_len, num_links, hidden_size)
 
-        # Global aggregation: mean over links
-        global_state = coordinated.mean(dim=1)  # (seq_len, hidden_size)
+        # Global aggregation based on fusion type
+        if self.fusion == 'attention':
+            # Learned query attends to all links
+            # Expand query to match seq_len: (seq_len, 1, hidden_size)
+            query = self.global_query.expand(seq_len, -1, -1)
+            # Attention pooling: query attends to link features
+            global_state, _ = self.pool_attention(
+                query=query, key=coordinated, value=coordinated
+            )  # (seq_len, 1, hidden_size)
+            global_state = global_state.squeeze(1)  # (seq_len, hidden_size)
+        elif self.fusion == 'max':
+            global_state = coordinated.max(dim=1)[0]  # (seq_len, hidden_size)
+        elif self.fusion == 'mean_max':
+            mean_pool = coordinated.mean(dim=1)  # (seq_len, hidden_size)
+            max_pool = coordinated.max(dim=1)[0]  # (seq_len, hidden_size)
+            global_state = torch.cat([mean_pool, max_pool], dim=-1)  # (seq_len, 2*hidden_size)
+        elif self.fusion == 'gated':
+            # Compute importance scores for each link
+            gate_scores = self.gate_fc(coordinated)  # (seq_len, num_links, 1)
+            gate_weights = F.softmax(gate_scores, dim=1)  # Softmax over links
+            global_state = (coordinated * gate_weights).sum(dim=1)  # (seq_len, hidden_size)
+        else:  # 'mean'
+            global_state = coordinated.mean(dim=1)  # (seq_len, hidden_size)
 
         # Value estimation
         value = self.value_head(F.elu(global_state))  # (seq_len, 1)
@@ -280,12 +340,15 @@ class PPOAgentHRL:
                  action_noise_std_min=0.001, num_episodes=100, tm_window=50,
                  use_lr_decay=False, lr_warmup_frac=0.05, lr_min_ratio=0.01,
                  max_duration=5,
-                 duration_entropy_coef=0.05):
+                 duration_entropy_coef=0.05,
+                 value_fusion='gated'):
         """
         Additional HRL args:
             max_duration: Maximum number of env steps the agent can commit to (default 5).
             duration_entropy_coef: Entropy bonus coefficient for the duration head
                 to encourage exploration over durations.
+            value_fusion: Pooling method for value network global aggregation.
+                Options: 'attention' (default), 'mean', 'max', 'mean_max', 'gated'
         """
         self.obs_dim = obs_dim
         self.act_dim = act_dim
@@ -299,6 +362,7 @@ class PPOAgentHRL:
         self.tm_step = 1
         self.max_duration = max_duration
         self.duration_entropy_coef = duration_entropy_coef
+        self.value_fusion = value_fusion
 
         # Entropy coefficient with exponential decay
         self.entropy_coef_initial = entropy_coef
@@ -340,7 +404,8 @@ class PPOAgentHRL:
             obs_dim, act_dim,
             hidden_size=lstm_hidden_size,
             num_layers=num_lstm_layers,
-            num_heads=num_heads
+            num_heads=num_heads,
+            fusion=value_fusion
         )
 
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
@@ -369,6 +434,11 @@ class PPOAgentHRL:
         self.lr_min_ratio = lr_min_ratio
         if self.use_lr_decay:
             self._setup_lr_scheduler()
+
+        # Duration commitment tracking (used by validation/evaluation)
+        # Initialize here to prevent AttributeError if take_action called before reset_buffer
+        self._remaining_duration = 0
+        self._committed_action = None
 
     # ------------------------------------------------------------------
     # Buffer management
@@ -904,6 +974,7 @@ class PPOAgentHRL:
             'num_lstm_layers': self.num_lstm_layers,
             'max_duration': self.max_duration,
             'duration_entropy_coef': self.duration_entropy_coef,
+            'value_fusion': self.value_fusion,
         }
         return config
 
@@ -921,6 +992,10 @@ class PPOAgentHRL:
             'current_param_noise_std': self.param_noise_std if self.use_param_noise else None,
             'current_action_noise_std': self.action_noise_std if self.use_action_noise else None,
         }
+        # Save LR scheduler state if using decay
+        if self.use_lr_decay:
+            save_dict['actor_scheduler_state_dict'] = self.actor_scheduler.state_dict()
+            save_dict['critic_scheduler_state_dict'] = self.critic_scheduler.state_dict()
         torch.save(save_dict, path)
 
     def load(self, path: str):
@@ -937,6 +1012,12 @@ class PPOAgentHRL:
             self.param_noise_std = checkpoint['current_param_noise_std']
         if 'current_action_noise_std' in checkpoint and checkpoint['current_action_noise_std'] is not None:
             self.action_noise_std = checkpoint['current_action_noise_std']
+        # Load LR scheduler state if using decay and state was saved
+        if self.use_lr_decay:
+            if 'actor_scheduler_state_dict' in checkpoint:
+                self.actor_scheduler.load_state_dict(checkpoint['actor_scheduler_state_dict'])
+            if 'critic_scheduler_state_dict' in checkpoint:
+                self.critic_scheduler.load_state_dict(checkpoint['critic_scheduler_state_dict'])
 
 
 # =============================================================================
