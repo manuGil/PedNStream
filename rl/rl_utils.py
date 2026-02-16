@@ -821,6 +821,9 @@ def load_all_agents(save_dir: str, device: str = "cpu", agent_class=None):
                 'use_gat_lstm', 'gat_hidden_size', 'gat_num_heads',
                 'use_lr_decay', 'lr_warmup_frac', 'lr_min_ratio',
                 'max_duration', 'duration_entropy_coef',  # HRL-specific
+                'value_fusion', 'num_heads',  # HRL value network fusion
+                'param_noise_std', 'param_noise_std_min',  # Param noise settings
+                'action_noise_std', 'action_noise_std_min',  # Action noise settings
                 'model_lr', 'norm_reward',  # POME/Dyna-specific
             ]
             
@@ -842,6 +845,21 @@ def load_all_agents(save_dir: str, device: str = "cpu", agent_class=None):
                 agent.update_count = checkpoint[agent_id]['update_count']
             if 'current_entropy_coef' in checkpoint[agent_id]:
                 agent.entropy_coef = checkpoint[agent_id]['current_entropy_coef']
+            
+            # Restore noise states if saved
+            if 'current_param_noise_std' in checkpoint[agent_id] and checkpoint[agent_id]['current_param_noise_std'] is not None:
+                if hasattr(agent, 'param_noise_std'):
+                    agent.param_noise_std = checkpoint[agent_id]['current_param_noise_std']
+            if 'current_action_noise_std' in checkpoint[agent_id] and checkpoint[agent_id]['current_action_noise_std'] is not None:
+                if hasattr(agent, 'action_noise_std'):
+                    agent.action_noise_std = checkpoint[agent_id]['current_action_noise_std']
+            
+            # Load LR scheduler state if using decay and state was saved
+            if hasattr(agent, 'use_lr_decay') and agent.use_lr_decay:
+                if 'actor_scheduler_state_dict' in checkpoint[agent_id] and hasattr(agent, 'actor_scheduler'):
+                    agent.actor_scheduler.load_state_dict(checkpoint[agent_id]['actor_scheduler_state_dict'])
+                if 'critic_scheduler_state_dict' in checkpoint[agent_id] and hasattr(agent, 'critic_scheduler'):
+                    agent.critic_scheduler.load_state_dict(checkpoint[agent_id]['critic_scheduler_state_dict'])
             
             # Load model-specific components for POME/Dyna agents
             if 'dynamic_model_state_dict' in checkpoint[agent_id] and hasattr(agent, 'dynamic_model'):
@@ -1476,7 +1494,7 @@ def compute_agent_local_metrics(simulation_dir=None, dataset=None):
     if dataset is None:
         raise ValueError("dataset parameter is required to compute agent local metrics")
     
-    from src.utils.env_loader import NetworkEnvGenerator
+    from pednstream.utils.env_loader import NetworkEnvGenerator
     from rl.discovery import AgentManager
     
     env_generator = NetworkEnvGenerator()
