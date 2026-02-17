@@ -171,6 +171,9 @@ class DurationAttentionPolicy(nn.Module):
         # 5a. Action head (per-link)
         mean = self.mean_head(F.relu(coordinated)).squeeze(-1)  # (seq_len, act_dim)
         std = F.softplus(self.std_head(F.relu(coordinated))).squeeze(-1).clamp(self.min_std, self.max_std)
+        # action_input = torch.cat([F.relu(coordinated), gate_width], dim=-1)  # (seq_len, act_dim, hidden_size+1)
+        # mean = self.mean_head(action_input).squeeze(-1)  # (seq_len, act_dim)
+        # std = F.softplus(self.std_head(action_input)).squeeze(-1).clamp(self.min_std, self.max_std)
 
         # 5b. Duration head (global): mean-pool over links → logits
         global_feat = coordinated.mean(dim=1)  # (seq_len, hidden_size)
