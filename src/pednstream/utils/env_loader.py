@@ -209,6 +209,7 @@ class NetworkEnvGenerator:
             data_path, 
             od_flows=reset_od_flows, 
             # link_params_overrides=reset_link_params,
+            # link_params_overrides=reset_gate_widths,
             demand_params_overrides=reset_demand_params,
             verbose=verbose,
         )
