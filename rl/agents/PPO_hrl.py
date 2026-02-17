@@ -151,6 +151,10 @@ class DurationAttentionPolicy(nn.Module):
         # 1. Prepare per-link input
         x_links = x.view(seq_len, self.act_dim, self.features_per_link).transpose(0, 1)
 
+        # Extract current gate width (last feature per link) for residual shortcut
+        # gate_width = x_links[:, :, -1:]  # (act_dim, seq_len, 1)
+        # gate_width = gate_width.transpose(0, 1)  # (seq_len, act_dim, 1)
+
         # 2. Shared LSTM
         lstm_out, hidden_out = self.lstm(x_links, hidden)
         lstm_features = lstm_out.transpose(0, 1)  # (seq_len, num_links, hidden_size)
