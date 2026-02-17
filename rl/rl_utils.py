@@ -1718,8 +1718,25 @@ def _evaluate_single_run(env, agents, delta_actions: bool, deterministic: bool, 
         absolute_actions = {}
         
         if no_control:
-            # No control baseline - skip action computation
-            pass
+            # No control baseline - open all gates (max width)
+            # Assuming action is delta_width, we want to maximize the width
+            # Or if absolute action, set to max width
+            for agent_id, agent in agents.items():
+                if delta_actions:
+                    # For delta actions, we want to increase width as much as possible
+                    # Set action to max positive delta
+                    actions[agent_id] = np.ones(agent.act_dim) * agent.act_high
+                    
+                    # Also compute absolute action for environment step
+                    # Current width is in observation
+                    current_width = obs[agent_id].reshape(env.action_space(agent_id).high, -1)[:, -1]
+                    absolute_action = current_width + actions[agent_id]
+                    # absolute_action = np.clip(absolute_action, agent.act_low, agent.act_high)
+                    absolute_actions[agent_id] = absolute_action
+                else:
+                    # For absolute actions, set to max width
+                    actions[agent_id] = np.ones(env.action_space(agent_id).shape[0]) * env.action_space(agent_id).high
+                    absolute_actions[agent_id] = actions[agent_id]
         else:
             # Get actions from all agents
             for agent_id, agent in agents.items():
