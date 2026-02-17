@@ -445,7 +445,66 @@ class NetworkEnvGenerator:
         self.config['destination_nodes'] = new_destinations
         return {'origin_nodes': new_origins, 'destination_nodes': new_destinations}
         
+    def generate_random_gate_widths(self, seed: int = None) -> dict:
+        """
+        Generate randomized initial back_gate_width for outgoing links of controller nodes (gaters).
         
+        The back_gate_width is randomly initialized from uniform distribution [0, link_width].
+        
+        Args:
+            seed: Random seed for reproducibility
+            
+        Returns:
+            Dictionary {link_id: {'back_gate_width': value}}
+        """
+        if seed is not None:
+            np.random.seed(seed)
+        
+        gate_width_overrides = {}
+        
+        # Get controller configuration
+        controller_config = self._original_config.get('params', {}).get('controllers', {})
+        if not controller_config.get('enabled', False):
+            return gate_width_overrides
+        
+        controller_nodes = set(map(int, controller_config.get('nodes', [])))
+        if not controller_nodes:
+            return gate_width_overrides
+        
+        # Get adjacency matrix to find outgoing links
+        adj_matrix = self.network_data['adjacency_matrix']
+        
+        default_link_params = self._original_config.get('params', {}).get('default_link', {})
+        default_width = default_link_params.get('width', 2.0)
+        link_params = self._original_config.get('params', {}).get('links', {})
+        
+        # Iterate through controller nodes and randomize their outgoing links' back_gate_width
+        for node in controller_nodes:
+            # Find outgoing neighbors from adjacency matrix
+            outgoing_neighbors = np.where(adj_matrix[node, :] == 1)[0]
+            
+            for neighbor in outgoing_neighbors:
+                link_id = f"{node}_{neighbor}"
+                reverse_link_id = f"{neighbor}_{node}"
+                
+                # Get link-specific width or use default
+                link_specific_params = link_params.get(link_id, {})
+                link_width = link_specific_params.get('width', default_width)
+                
+                # Randomize back_gate_width from uniform [0, link_width]
+                back_gate = np.random.uniform(0, link_width)
+                
+                # Set back_gate_width for outgoing link
+                gate_width_overrides[link_id] = {
+                    'back_gate_width': back_gate
+                }
+                
+                # Set front_gate_width for reverse link (same physical gate)
+                if reverse_link_id not in gate_width_overrides:
+                    gate_width_overrides[reverse_link_id] = {}
+                gate_width_overrides[reverse_link_id]['front_gate_width'] = back_gate
+        
+        return gate_width_overrides
 
     def generate_random_link_params(self) -> dict:
         """
