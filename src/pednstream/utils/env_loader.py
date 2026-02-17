@@ -201,6 +201,7 @@ class NetworkEnvGenerator:
         # reset_link_params = self.generate_random_link_params()
         reset_od_flows = self.generate_random_od_flows()
         reset_demand_params = self.generate_random_demand_params()
+        # reset_gate_widths = self.generate_random_gate_widths()
 
         
         # Create network with overrides
