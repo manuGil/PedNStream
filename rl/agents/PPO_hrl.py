@@ -823,6 +823,13 @@ class PPOAgentHRL:
             self.entropy_coef = max(
                 self.entropy_coef_initial * (decay_rate ** self.update_count),
                 self.entropy_coef_min)
+
+            # decay duration entropy coef
+            decay_rate_duration = (self.duration_entropy_coef_min / self.duration_entropy_coef_initial) ** (
+                1.0 / max(self.total_updates, 1))
+            self.duration_entropy_coef = max(
+                self.duration_entropy_coef_initial * (decay_rate_duration ** self.update_count),
+                self.duration_entropy_coef_min)
         else:
             progress = min(self.update_count / self.total_updates, 1.0)
             self.entropy_coef = self.entropy_coef_initial + \
