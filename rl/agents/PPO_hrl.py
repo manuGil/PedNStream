@@ -369,6 +369,8 @@ class PPOAgentHRL:
         self.tm_step = 1
         self.max_duration = max_duration
         self.duration_entropy_coef = duration_entropy_coef
+        self.duration_entropy_coef_initial = duration_entropy_coef
+        self.duration_entropy_coef_min = duration_entropy_coef_min
         self.value_fusion = value_fusion
 
         # Entropy coefficient with exponential decay
