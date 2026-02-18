@@ -348,6 +348,7 @@ class PPOAgentHRL:
                  use_lr_decay=False, lr_warmup_frac=0.05, lr_min_ratio=0.01,
                  max_duration=5,
                  duration_entropy_coef=0.05,
+                 duration_entropy_coef_min=0.001,
                  value_fusion='gated'):
         """
         Additional HRL args:
