@@ -572,7 +572,15 @@ class PPOAgentHRL:
         # --- Discrete duration ---
         dur_probs = F.softmax(dur_logits, dim=-1).squeeze(0)  # (max_duration,)
         if deterministic:
-            duration = int(dur_probs.argmax().item()) + 1  # 1-indexed
+            # duration = int(dur_probs.argmax().item()) + 1  # 1-indexed
+            # sample top k
+            top_k = 2
+            top_k_probs, top_k_indices = dur_probs.topk(top_k)
+            # Normalize top_k probabilities to sum to 1
+            top_k_probs_normalized = top_k_probs / top_k_probs.sum()
+            # Sample from top k using their normalized probabilities
+            duration_idx = np.random.choice(top_k_indices.detach().cpu().numpy(), size=1, p=top_k_probs_normalized.detach().cpu().numpy())[0]
+            duration = int(duration_idx) + 1
             print(duration)
         else:
             dur_dist = torch.distributions.Categorical(dur_probs)
