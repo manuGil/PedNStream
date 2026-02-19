@@ -281,6 +281,7 @@ class Link(BaseLink):
             # if time_step - tau + 1 < 0: # congestion stage
             ''' for the normal stage or the congestion stage '''
             idx = max(0, time_step + 1 - tau)
+            # idx = min(max(0, time_step + 1 - tau), len(self.cumulative_inflow) - 1)
             # sending_flow_boundary = max(0, self.cumulative_inflow[idx] - self.cumulative_outflow[time_step])
             # if density > self.k_critical:  # congestion stage
             #     sending_flow_boundary = self.num_pedestrians[time_step]

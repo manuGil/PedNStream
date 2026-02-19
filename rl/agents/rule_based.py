@@ -181,6 +181,7 @@ if __name__ == "__main__":
     # dataset = "small_network"
     env = PedNetParallelEnv(dataset, obs_mode="option2", action_gap=1, render_mode="animate", verbose=True)
     env = RunningNormalizeWrapper(env, norm_obs=False, norm_reward=True)
+    env.seed(30)
 
     #create a rule-based agents
     rule_based_gater_agents = {}
@@ -191,25 +192,25 @@ if __name__ == "__main__":
         rule_based_separator_agents[agent_id] = RuleBasedSeparatorAgent(env.agent_manager.get_separator_links(agent_id)[0].width, use_smoothing=True, buffer_size=5)
 
     episode_rewards = {agent_id: 0.0 for agent_id in env.agents}
-    observations, infos = env.reset(options={"randomize": False})
+    observations, infos = env.reset(options={"randomize": True})
     # observations, infos = env.reset(options={"randomize": True})
     # for step in range(env.simulation_steps):
     done = False
     rewards_list = []
     while not done:
-        # actions = {}
-        # for agent_id in env.agents:
-        #     if agent_id in rule_based_gater_agents:
-        #         actions[agent_id] = rule_based_gater_agents[agent_id].take_action(observations[agent_id])
-        #     elif agent_id in rule_based_separator_agents:
-        #         actions[agent_id] = rule_based_separator_agents[agent_id].take_action(observations[agent_id])
         actions = {}
         for agent_id in env.agents:
-            action_space = env.action_space(agent_id)
-            if action_space.shape == (1,):
-                actions[agent_id] = action_space.low
-            else:
-                actions[agent_id] = action_space.sample()
+            if agent_id in rule_based_gater_agents:
+                actions[agent_id] = rule_based_gater_agents[agent_id].take_action(observations[agent_id])
+            elif agent_id in rule_based_separator_agents:
+                actions[agent_id] = rule_based_separator_agents[agent_id].take_action(observations[agent_id])
+        # actions = {}
+        # for agent_id in env.agents:
+        #     action_space = env.action_space(agent_id)
+        #     if action_space.shape == (1,):
+        #         actions[agent_id] = action_space.low
+        #     else:
+        #         actions[agent_id] = action_space.sample()
             # print(actions[agent_id])
             # if agent_id == "gate_24":
             #     print(f"Step {step}: Agent {agent_id} action: {actions[agent_id]}")

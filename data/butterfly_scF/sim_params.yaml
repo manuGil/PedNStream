@@ -67,28 +67,28 @@ links:
 
 controllers:
    enabled: true  # Set to true to enable controller-based path expansion
-   nodes: [2, 6]  # List of node IDs that act as controllers
+   nodes: [2]  # List of node IDs that act as controllers
 
 # Demand Configuration
 demand:
   origin_1:
    pattern: "gaussian_peaks"
-   peak_lambda: 60
-   base_lambda: 40
+   peak_lambda: 50
+   base_lambda: 20
 
   origin_0:
    pattern: "multi_peaks"
    peak_lambda: 50
-   base_lambda: 30
+   base_lambda: 20
 
   origin_8:
    pattern: "multi_peaks"
-   peak_lambda: 20
-   base_lambda: 10
+   peak_lambda: 40
+   base_lambda: 20
 
   origin_7:
    pattern: "gaussian_peaks"
-   peak_lambda: 40
+   peak_lambda: 30
    base_lambda: 20
 
 

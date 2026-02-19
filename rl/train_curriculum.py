@@ -335,6 +335,9 @@ def train_hrl_curriculum_mixed(
                     start_obs = obs[agent_id].copy()
 
                     for k_step in range(duration):
+                        if done:
+                            break  # simulation already ended in a previous step
+
                         next_obs, rewards, terms, truncs, infos = env.step(
                             {agent_id: absolute_action}
                         )
@@ -349,8 +352,6 @@ def train_hrl_curriculum_mixed(
                         obs = next_obs
                         step += 1
                         done = any(terms.values()) or any(truncs.values())
-                        if done:
-                            break
 
                     # --- Store macro-transition ---
                     agent.store_transition(
@@ -622,24 +623,24 @@ if __name__ == "__main__":
     # ======================================================================
     # Train
     # ======================================================================
-    # return_list, final_return = train_hrl_curriculum_mixed(
-    #     agent=agent,
-    #     scenario_sequence=SCENARIO_SEQUENCE,
-    #     env_factory=env_factory,
-    #     num_episodes=NUM_EPISODES,
-    #     num_trajectories_per_update=NUM_TRAJ_PER_UPDATE,
-    #     delta_actions=True,
-    #     randomize=randomize,
-    #     val_freq=VAL_FREQ,
-    #     num_val_episodes=NUM_VAL_EPISODES,
-    #     save_dir=save_dir,
-    #     use_wandb=True,
-    #     scenario_sampling=SCENARIO_SAMPLING,
-    #     debug_save_dir="curriculum_debug",
-    #     debug_save_episodes=[10, 100, 200, 300, 400],
-    #     reward_rescaling=True,
-    #     rescale_warmup=5,
-    # )
+    return_list, final_return = train_hrl_curriculum_mixed(
+        agent=agent,
+        scenario_sequence=SCENARIO_SEQUENCE,
+        env_factory=env_factory,
+        num_episodes=NUM_EPISODES,
+        num_trajectories_per_update=NUM_TRAJ_PER_UPDATE,
+        delta_actions=True,
+        randomize=randomize,
+        val_freq=VAL_FREQ,
+        num_val_episodes=NUM_VAL_EPISODES,
+        save_dir=save_dir,
+        use_wandb=False,
+        scenario_sampling=SCENARIO_SAMPLING,
+        debug_save_dir="curriculum_debug",
+        debug_save_episodes=[10, 100, 200, 300, 400],
+        reward_rescaling=True,
+        rescale_warmup=5,
+    )
 
     # ======================================================================
     # Extended Evaluation (load best model)

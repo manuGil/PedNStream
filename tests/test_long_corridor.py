@@ -13,8 +13,8 @@ import pytest
 from handlers.output_handler import OutputHandler
 
 # Now you can import using the project structure
-from src.utils.visualizer import NetworkVisualizer
-from src.LTM.network import Network
+from pednstream.utils.visualizer import NetworkVisualizer
+from pednstream.ltm.network import Network
 from pathlib import Path
 
 

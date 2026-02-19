@@ -226,6 +226,8 @@ class PedNetParallelEnv(ParallelEnv):
         
         for _ in range(self._action_gap): # every action_gap steps, apply the actions
             # Advance the simulation by one step
+            if self.sim_step == 601:
+                pass
             self.network.network_loading(self.sim_step)
             
             # Build new observations
