@@ -54,7 +54,7 @@ video = [
 
 [project.urls]
 Homepage = "https://github.com/WaimenMak/PedNStream"
-Documentation = "https://github.com/WaimenMak/PedNStream/README.md"
+Documentation = "https://github.com/WaimenMak/PedNStream#readme"
 Repository = "https://github.com/WaimenMak/PedNStream"
 "Bug Tracker" = "https://github.com/WaimenMak/PedNStream/issues"
 Changelog = "https://github.com/WaimenMak/PedNStream/blob/main/CHANGELOG.md"
